@@ -7,6 +7,7 @@ from pathlib import Path
 from .browser import Browser, StalePage
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
+from .tracing import Trace
 
 
 class Agent:
@@ -16,6 +17,7 @@ class Agent:
             raise ValueError("Supply a task")
         plan = [task]
         self.pending_text = None
+        self.trace = Trace(url, task)
         self.browser = Browser(url)
         self.record_dir = Path(record_dir) if record_dir else None
         self.screenshots = screenshots or bool(record_dir)
@@ -74,7 +76,7 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            state["decision"] = choose(state["page"], state["goal"], state["history"], self.trace)
             state["decisions"].append(
                 {
                     **state["decision"],
@@ -113,6 +115,7 @@ class Agent:
                     text, helper = field_text(context)
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
+                self.trace.type_text(context, text)
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
             self.pending_text = None
@@ -162,7 +165,23 @@ class Agent:
 
     def run(self):
         while self.state["status"] not in {"done", "blocked"}:
-            yield self.command("tick")
+            try:
+                snapshot = self.command("tick")
+            except Exception:
+                self.finish_trace(failed=True)
+                raise
+            if snapshot["status"] in {"done", "blocked"}:
+                self.finish_trace()
+            yield snapshot
+
+    def finish_trace(self, failed=False):
+        state = self.state
+        status = state["status"].upper()
+        if failed:
+            budget = len(state["history"]) >= MAX_STEPS or len(state["decisions"]) >= MAX_STEPS * 2
+            status = "max_steps" if budget else "error"
+        started = state["started_at"]
+        self.trace.finish(status, round((time.perf_counter() - started) * 1000) if started else 0)
 
     def close(self):
         self.browser.close()

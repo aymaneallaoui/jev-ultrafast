@@ -10,6 +10,7 @@ import pytest
 from jev_ultrafast import agent as loop
 from jev_ultrafast import model
 from jev_ultrafast.browser import StalePage, browser_operation, fingerprint
+from jev_ultrafast.tracing import Trace
 
 
 def page():
@@ -140,6 +141,40 @@ def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch
     assert d["choice"] == "e3"
 
 
+def click_response(_url, _key, body):
+    return {
+        "model": "test",
+        "usage": {"input_tokens": 7},
+        "answers": {
+            "operation": choice(body["questions"]["operation"]["criteria"], "CLICK"),
+            "click_target": choice(["1", "2"], "2"),
+        },
+    }
+
+
+def test_trace_writes_one_line_per_choice_without_credentials(monkeypatch, tmp_path):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "secret-key")
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    monkeypatch.setattr(model, "post_json", click_response)
+    trace = Trace("https://example.test/", "Find a book")
+    model.choose(page(), "Find a book", [], trace)
+    lines = (tmp_path / f"{trace.run_id}.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    line = json.loads(lines[0])
+    assert set(line) == {"step", "goal", "request", "answers", "latency_ms", "usage"}
+    assert line["step"] == 1 and line["goal"] == "Find a book" and line["usage"] == {"input_tokens": 7}
+    assert "secret-key" not in lines[0]
+
+
+def test_trace_writes_nothing_without_trace_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("TRACE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", click_response)
+    model.choose(page(), "Find a book", [], Trace("https://example.test/", "Find a book"))
+    assert not any(tmp_path.iterdir())
+
+
 def test_quoted_task_text_still_uses_the_llm(monkeypatch):
     monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
     post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich"}'}}]})
@@ -158,10 +193,12 @@ def test_missing_text_credential_stops_before_guessing(monkeypatch):
 
 
 @pytest.fixture
-def runner():
+def runner(monkeypatch):
+    monkeypatch.delenv("TRACE_DIR", raising=False)
     a = loop.Agent.__new__(loop.Agent)
     a.screenshots = False
     a.pending_text = None
+    a.trace = Trace("https://example.test/", "Find a book")
     p = page()
     a.state = {
         "browser": Mock(fresh=Mock(return_value=True), observe=Mock(return_value=p)),

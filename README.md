@@ -89,6 +89,8 @@ uv run --env-file .env python examples/run.py \
   --goal 'Find and open the Wikipedia article about Gödel’s incompleteness theorems.'
 ```
 
+Set `TRACE_DIR` to write one JSON line per TypeSafe decision to `<run_id>.jsonl`, plus `<run_id>.meta.json` when `run()` ends. Request bodies and text-helper inputs are logged; API keys are not. `TYPESAFE_BASE_URL` overrides the TypeSafe endpoint (default `https://api.typesafe.ai`).
+
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
 ## Why it moves

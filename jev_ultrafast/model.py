@@ -78,7 +78,7 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history):
+def choose(state, goal, history, trace=None):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -115,8 +115,10 @@ def choose(state, goal, history):
         },
         "questions": questions,
     }
+    base = os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai").rstrip("/")
     started = time.perf_counter()
-    result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    result = post_json(base + "/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
+    request_ms = round((time.perf_counter() - started) * 1000)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
@@ -131,6 +133,8 @@ def choose(state, goal, history):
     else:
         choice = controls[operation]["id"] if operation in controls else operation
         probabilities[choice] = operation_answer["probabilities"][operation]
+    if trace:
+        trace.step(goal, body, result, request_ms, awaiting_text=operation == "TYPE_TEXT")
     return {
         "choice": choice,
         "operation": operation,
