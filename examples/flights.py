@@ -53,6 +53,7 @@ def main():
     finally:
         state = agent.snapshot()
         state["verification"] = verify(state["page"])
+        agent.trace.set_verified(state["verification"]["passed"])
         (folder / "state.json").write_text(json.dumps(state, indent=2))
         (folder / "session.json").write_text(
             json.dumps({"target": agent.browser.target, "session": agent.browser.session})

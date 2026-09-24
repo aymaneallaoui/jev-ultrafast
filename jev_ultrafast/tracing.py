@@ -15,6 +15,8 @@ class Trace:
         self.url, self.goal = url, goal
         self.steps = 0
         self.pending = None
+        self.verified = None
+        self.meta = None
 
     def step(self, goal, request, result, latency_ms, *, awaiting_text=False):
         self.flush()
@@ -42,11 +44,35 @@ class Trace:
             with open(self.directory / f"{self.run_id}.jsonl", "a", encoding="utf-8") as file:
                 file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def finish(self, status, elapsed_ms):
+    @property
+    def finished(self):
+        return self.meta is not None
+
+    def finish(self, status, elapsed_ms, error=None):
         self.flush()
+        if self.finished:
+            return
+        self.meta = {
+            "goal": self.goal,
+            "url": self.url,
+            "status": status,
+            "steps": self.steps,
+            "elapsed_ms": elapsed_ms,
+            "verified": self.verified,
+        }
+        if error is not None:
+            self.meta["error"] = error
+        self.write_meta()
+
+    def set_verified(self, value):
+        self.verified = None if value is None else bool(value)
+        if self.finished:
+            self.meta["verified"] = self.verified
+            self.write_meta()
+
+    def write_meta(self):
         if self.directory:
             self.directory.mkdir(parents=True, exist_ok=True)
-            meta = {"goal": self.goal, "url": self.url, "status": status, "steps": self.steps, "elapsed_ms": elapsed_ms}
             (self.directory / f"{self.run_id}.meta.json").write_text(
-                json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
+                json.dumps(self.meta, ensure_ascii=False, indent=2), encoding="utf-8"
             )

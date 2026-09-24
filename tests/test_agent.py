@@ -349,6 +349,52 @@ def test_text_helper_rejects_invalid_values(monkeypatch, content):
         model.field_text({"goal": "Find a flight"})
 
 
+def traced(runner, monkeypatch, tmp_path):
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    runner.trace = Trace("https://example.test/", "Find a book")
+    runner.browser = runner.state["browser"]
+    runner.state["status"] = "ready"
+    return lambda: json.loads((tmp_path / f"{runner.trace.run_id}.meta.json").read_text())
+
+
+def test_close_without_run_writes_closed_meta(runner, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    runner.close()
+    assert meta()["status"] == "closed" and meta()["verified"] is None and "error" not in meta()
+    runner.trace.set_verified(False)
+    assert meta()["verified"] is False
+    runner.trace.set_verified(None)
+    assert meta()["verified"] is None
+
+
+def test_close_after_run_keeps_run_status_and_verification(runner, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    monkeypatch.setattr(model, "post_json", lambda _url, _key, body: {
+        "model": "test", "answers": {"operation": choice(body["questions"]["operation"]["criteria"], "DONE")},
+    })
+    list(runner.run())
+    runner.trace.set_verified(True)
+    runner.close()
+    assert meta()["status"] == "DONE" and meta()["verified"] is True and meta()["steps"] == 1
+
+
+def test_budget_exhaustion_is_traced_as_max_steps(runner, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    runner.state["decisions"] = [{}] * (loop.MAX_STEPS * 2)
+    with pytest.raises(ValueError, match="model-call budget"):
+        list(runner.run())
+    assert meta()["status"] == "max_steps" and meta()["error"] == "Reached the demo's model-call budget"
+
+
+def test_other_exceptions_are_traced_as_errors(runner, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    runner.state["browser"].fresh.side_effect = RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"):
+        list(runner.run())
+    assert meta()["status"] == "error" and meta()["error"] == "boom"
+
+
 def test_navigation_during_prediction_reobserves_without_action(runner):
     runner.state["browser"].fresh.side_effect = StalePage("Document navigating")
     runner.command("tick")

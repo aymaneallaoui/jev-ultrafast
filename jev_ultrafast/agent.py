@@ -10,6 +10,10 @@ from .questions import MAX_STEPS
 from .tracing import Trace
 
 
+class BudgetExhausted(ValueError):
+    pass
+
+
 class Agent:
     def __init__(self, url, goals, *, record_dir=None, screenshots=False):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
@@ -75,7 +79,7 @@ class Agent:
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
-                raise ValueError("Reached the demo's model-call budget")
+                raise BudgetExhausted("Reached the demo's model-call budget")
             state["decision"] = choose(state["page"], state["goal"], state["history"], self.trace)
             state["decisions"].append(
                 {
@@ -103,7 +107,7 @@ class Agent:
             action = next(a for a in page["actions"] if a["id"] == selected)
             if len(state["history"]) >= MAX_STEPS:
                 state["status"] = "blocked"
-                raise ValueError(f"Stopped at the {MAX_STEPS}-action demo budget")
+                raise BudgetExhausted(f"Stopped at the {MAX_STEPS}-action demo budget")
             text, helper = None, None
             if action["kind"] == "fill":
                 if not state["browser"].fresh(page):
@@ -167,23 +171,23 @@ class Agent:
         while self.state["status"] not in {"done", "blocked"}:
             try:
                 snapshot = self.command("tick")
-            except Exception:
-                self.finish_trace(failed=True)
+            except BudgetExhausted as error:
+                self.finish_trace("max_steps", error)
+                raise
+            except Exception as error:
+                self.finish_trace("error", error)
                 raise
             if snapshot["status"] in {"done", "blocked"}:
-                self.finish_trace()
+                self.finish_trace(snapshot["status"].upper())
             yield snapshot
 
-    def finish_trace(self, failed=False):
-        state = self.state
-        status = state["status"].upper()
-        if failed:
-            budget = len(state["history"]) >= MAX_STEPS or len(state["decisions"]) >= MAX_STEPS * 2
-            status = "max_steps" if budget else "error"
-        started = state["started_at"]
-        self.trace.finish(status, round((time.perf_counter() - started) * 1000) if started else 0)
+    def finish_trace(self, status, error=None):
+        started = self.state["started_at"]
+        elapsed_ms = round((time.perf_counter() - started) * 1000) if started else 0
+        self.trace.finish(status, elapsed_ms, None if error is None else str(error))
 
     def close(self):
+        self.finish_trace("closed")
         self.browser.close()
 
     def __enter__(self):
