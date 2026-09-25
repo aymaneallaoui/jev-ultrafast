@@ -2,6 +2,7 @@
 
 import base64
 import re
+import unicodedata
 from urllib.parse import parse_qs, urlparse
 
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
@@ -22,8 +23,21 @@ def date_forms(day):
     }
 
 
-def flights(page, *, origin, destination, day, one_way=True, adults=None):
+def normalize(text):
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    return " ".join("".join(c for c in decomposed if not unicodedata.combining(c)).casefold().split())
+
+
+def city_matches(value, city):
+    """Accent- and case-insensitive containment, so "Zürich" matches "Zurich" and "New York, NY" matches "New York"."""
+    value, city = normalize(value), normalize(city)
+    return bool(value and city) and city in value
+
+
+def flights(page, *, origin, destination, day, one_way=True, return_day=None, adults=None):
     """Google Flights search results for one route and departure date."""
+    if not one_way and return_day is None:
+        raise ValueError("Round-trip verification needs return_day")
     forms = date_forms(day)
     parsed = urlparse(page["url"])
     encoded = parse_qs(parsed.query).get("tfs", [""])[0]
@@ -38,13 +52,15 @@ def flights(page, *, origin, destination, day, one_way=True, adults=None):
     checks = {
         "search_page": parsed.hostname == "www.google.com" and parsed.path == "/travel/flights/search",
         "one_way" if one_way else "round_trip": values.get(f"Change ticket type. {trip}") == trip,
-        "origin": values.get("Where from?") == origin,
-        "destination": values.get("Where to?") == destination,
+        "origin": city_matches(values.get("Where from?"), origin),
+        "destination": city_matches(values.get("Where to?"), destination),
         "date": values.get("Departure") == forms["departure"],
         "year": date_in_url or f"departing {forms['iso']}" in page["text"],
         "results": bool(flight_labels) and all(forms["flight"] in f for f in flight_labels),
     }
+    if not one_way:
+        checks["return_date"] = values.get("Return") == date_forms(return_day)["departure"]
     if adults is not None:
-        passengers = re.compile(rf"{adults} passengers?\b")
-        checks["passengers"] = any(passengers.match(a["label"]) for a in actions if a.get("role") == "button")
+        counts = [re.search(r"(\d+) passengers?", a["label"]) for a in actions if a.get("role") == "button"]
+        checks["passengers"] = adults in [int(match.group(1)) for match in counts if match]
     return {"passed": all(checks.values()), "checks": checks, "visible_flights": flight_labels}

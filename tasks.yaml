@@ -1,73 +1,73 @@
 # Collection tasks for scripts/collect.py. Goals may use {date+N}, {date+N:strftime}, and {weekday+N}.
 
 - id: flights-zurich-london
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from Zurich to London on {date+14}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights
   verify_args: {origin: "Zürich", destination: "London", date: "{date+14:%Y-%m-%d}", one_way: true, adults: 1}
 - id: flights-paris-rome
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from Paris to Rome on {date+10}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights
   verify_args: {origin: "Paris", destination: "Rome", date: "{date+10:%Y-%m-%d}", one_way: true, adults: 1}
 - id: flights-berlin-madrid
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find round-trip flights from Berlin to Madrid departing {date+20} and returning {date+27}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, round_trip]
   verify: flights
-  verify_args: {origin: "Berlin", destination: "Madrid", date: "{date+20:%Y-%m-%d}", one_way: false, adults: 1}
+  verify_args: {origin: "Berlin", destination: "Madrid", date: "{date+20:%Y-%m-%d}", return_date: "{date+27:%Y-%m-%d}", one_way: false, adults: 1}
 - id: flights-newyork-chicago
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from New York to Chicago on {date+30}, for two adults in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights
   verify_args: {origin: "New York", destination: "Chicago", date: "{date+30:%Y-%m-%d}", one_way: true, adults: 2}
 - id: flights-sanfrancisco-seattle
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find round-trip flights from San Francisco to Seattle departing {date+25} and returning {date+32}, for two adults in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, round_trip]
   verify: flights
-  verify_args: {origin: "San Francisco", destination: "Seattle", date: "{date+25:%Y-%m-%d}", one_way: false, adults: 2}
+  verify_args: {origin: "San Francisco", destination: "Seattle", date: "{date+25:%Y-%m-%d}", return_date: "{date+32:%Y-%m-%d}", one_way: false, adults: 2}
 - id: flights-tokyo-seoul
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from Tokyo to Seoul on {date+35}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights
   verify_args: {origin: "Tokyo", destination: "Seoul", date: "{date+35:%Y-%m-%d}", one_way: true, adults: 1}
 - id: flights-amsterdam-lisbon
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find round-trip flights from Amsterdam to Lisbon departing {date+38} and returning {date+45}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, round_trip]
   verify: flights
-  verify_args: {origin: "Amsterdam", destination: "Lisbon", date: "{date+38:%Y-%m-%d}", one_way: false, adults: 1}
+  verify_args: {origin: "Amsterdam", destination: "Lisbon", date: "{date+38:%Y-%m-%d}", return_date: "{date+45:%Y-%m-%d}", one_way: false, adults: 1}
 - id: flights-toronto-boston
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from Toronto to Boston on {date+12}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights
   verify_args: {origin: "Toronto", destination: "Boston", date: "{date+12:%Y-%m-%d}", one_way: true, adults: 1}
 - id: flights-sydney-melbourne
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find round-trip flights from Sydney to Melbourne departing {date+18} and returning {date+22}, for two adults in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, round_trip]
   verify: flights
-  verify_args: {origin: "Sydney", destination: "Melbourne", date: "{date+18:%Y-%m-%d}", one_way: false, adults: 2}
+  verify_args: {origin: "Sydney", destination: "Melbourne", date: "{date+18:%Y-%m-%d}", return_date: "{date+22:%Y-%m-%d}", one_way: false, adults: 2}
 - id: flights-vienna-dublin
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from Vienna to Dublin on {date+28}, for two adults in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights
   verify_args: {origin: "Vienna", destination: "Dublin", date: "{date+28:%Y-%m-%d}", one_way: true, adults: 2}
 - id: flights-singapore-bangkok
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find round-trip flights from Singapore to Bangkok departing {date+33} and returning {date+40}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, round_trip]
   verify: flights
-  verify_args: {origin: "Singapore", destination: "Bangkok", date: "{date+33:%Y-%m-%d}", one_way: false, adults: 1}
+  verify_args: {origin: "Singapore", destination: "Bangkok", date: "{date+33:%Y-%m-%d}", return_date: "{date+40:%Y-%m-%d}", one_way: false, adults: 1}
 - id: flights-barcelona-munich
-  url: https://www.google.com/travel/flights?hl=en
+  url: https://www.google.com/travel/flights?hl=en&gl=US&curr=USD
   goal: "Find one-way flights from Barcelona to Munich on {date+45}, for one adult in economy. Stop when matching flight options are visible. Do not select or book a flight."
   tags: [google_flights, one_way]
   verify: flights

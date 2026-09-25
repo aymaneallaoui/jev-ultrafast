@@ -1,11 +1,14 @@
 """Offline contracts for trace collection and conversion. No browser, network, or paid APIs."""
 
+import argparse
 import csv
 import hashlib
 import json
+import re
 from collections import Counter
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,28 +44,139 @@ def test_tasks_file_has_the_planned_distribution():
         assert "{" not in task["goal"] and "Stop when" in task["goal"]
         assert ("verify" in task) == (task["tags"][0] == "google_flights")
         if "verify" in task:
-            assert set(task["verify_args"]) == {"origin", "destination", "day", "one_way", "adults"}
-            assert date_forms(task["verify_args"]["day"])["goal"] in task["goal"]
+            arguments = task["verify_args"]
+            assert {"origin", "destination", "day", "one_way", "adults"} <= set(arguments)
+            assert date_forms(arguments["day"])["goal"] in task["goal"]
 
 
-def test_flight_verifier_checks_trip_type_and_passengers_when_asked():
-    page = {
+def test_round_trip_tasks_verify_the_goal_return_date():
+    raw = {t["id"]: t for t in collect.yaml.safe_load((ROOT / "tasks.yaml").read_text())}
+    round_trips = [t for t in raw.values() if "round_trip" in t["tags"]]
+    assert round_trips
+    for task in round_trips:
+        returning = re.search(r"returning \{date\+(\d+)\}", task["goal"]).group(1)
+        assert task["verify_args"]["return_date"] == f"{{date+{returning}:%Y-%m-%d}}"
+
+
+def test_round_trip_task_without_return_date_fails_to_load(tmp_path):
+    path = tmp_path / "tasks.yaml"
+    path.write_text(
+        "- {id: t, url: u, goal: g, tags: [google_flights], verify: flights,\n"
+        "   verify_args: {origin: A, destination: B, date: '{date+10:%Y-%m-%d}', one_way: false}}\n"
+    )
+    with pytest.raises(ValueError, match="return_date"):
+        collect.load_tasks(path, TODAY)
+
+
+def flight_page(**values):
+    fields = {
+        "Change ticket type. Round trip": "Round trip",
+        "Where from?": "Zürich",
+        "Where to?": "New York, NY",
+        "Departure": "Mon, Oct 12",
+        "Return": "Mon, Oct 19",
+        **values,
+    }
+    return {
         "url": "https://www.google.com/travel/flights/search?tfs=example",
         "text": "departing 2026-10-12",
         "actions": [
-            {"label": "Change ticket type. Round trip", "value": "Round trip"},
+            *({"label": label, "value": value} for label, value in fields.items()),
             {"label": "2 passengers, change number of passengers.", "role": "button"},
-            {"label": "Where from?", "value": "Paris"},
-            {"label": "Where to?", "value": "Rome"},
-            {"label": "Departure", "value": "Mon, Oct 12"},
+            {"label": "Passenger assistance", "role": "button"},
             {"label": "Nonstop flight on Monday, October 12. Select flight", "value": ""},
         ],
     }
-    route = {"origin": "Paris", "destination": "Rome", "day": date(2026, 10, 12)}
-    assert flights(page, one_way=False, adults=2, **route)["passed"]
-    assert not flights(page, one_way=False, adults=1, **route)["passed"]
-    assert not flights(page, one_way=True, **route)["passed"]
-    assert "passengers" not in flights(page, one_way=False, **route)["checks"]
+
+
+ROUND_TRIP = {"day": date(2026, 10, 12), "return_day": date(2026, 10, 19), "one_way": False}
+
+
+@pytest.mark.parametrize("origin, destination", [("Zurich", "new york"), ("ZÜRICH", "New  York")])
+def test_flight_cities_match_across_accents_case_and_suffixes(origin, destination):
+    assert flights(flight_page(), origin=origin, destination=destination, **ROUND_TRIP)["passed"]
+    page = flight_page(**{"Where from?": "Zurich"})
+    assert flights(page, origin="Zürich", destination="New York", **ROUND_TRIP)["checks"]["origin"]
+
+
+@pytest.mark.parametrize("value", ["", None, "Geneva"])
+def test_flight_city_mismatch_or_empty_value_fails(value):
+    checks = flights(flight_page(**{"Where from?": value}), origin="Zurich", destination="New York", **ROUND_TRIP)
+    assert not checks["checks"]["origin"] and not checks["passed"]
+
+
+def test_flight_passenger_count_is_parsed_from_buttons():
+    route = {"origin": "Zurich", "destination": "New York", **ROUND_TRIP}
+    assert flights(flight_page(), adults=2, **route)["checks"]["passengers"]
+    assert not flights(flight_page(), adults=1, **route)["checks"]["passengers"]
+    single = flight_page()
+    single["actions"][5]["label"] = "1 passenger, change number of passengers."
+    assert flights(single, adults=1, **route)["checks"]["passengers"]
+    assert "passengers" not in flights(flight_page(), **route)["checks"]
+
+
+def test_round_trip_checks_the_return_date():
+    route = {"origin": "Zurich", "destination": "New York", "day": date(2026, 10, 12), "one_way": False}
+    assert flights(flight_page(), return_day=date(2026, 10, 19), **route)["checks"]["return_date"]
+    assert not flights(flight_page(), return_day=date(2026, 10, 20), **route)["passed"]
+    assert not flights(flight_page(Return=""), return_day=date(2026, 10, 19), **route)["passed"]
+    with pytest.raises(ValueError, match="return_day"):
+        flights(flight_page(), **route)
+    assert not flights(flight_page(), origin="Zurich", destination="New York", day=date(2026, 10, 12))["passed"]
+
+
+@pytest.mark.parametrize("text, seconds", [("90", 90), ("45s", 45), ("90m", 5400), ("2h", 7200)])
+def test_max_runtime_accepts_seconds_or_suffixes(text, seconds):
+    assert collect.duration(text) == seconds
+
+
+@pytest.mark.parametrize("text", ["", "0", "1.5h", "2d", "-5", "m"])
+def test_max_runtime_rejects_invalid_values(text):
+    with pytest.raises(argparse.ArgumentTypeError):
+        collect.duration(text)
+
+
+@pytest.mark.parametrize("step_seconds, steps, stopped, statuses, clock_end", [
+    (30, None, [120], ["timeout"], 120),
+    (99, 1, [], ["closed"], 99),
+])
+def test_batch_deadline_stops_the_current_run_and_skips_the_rest(
+    tmp_path, monkeypatch, capsys, step_seconds, steps, stopped, statuses, clock_end
+):
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(collect, "time", SimpleNamespace(
+        monotonic=lambda: clock.now, sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+    ))
+    finished = []
+
+    class FakeAgent:
+        def __init__(self, url, goal):
+            self.trace = Trace(url, goal)
+
+        def run(self):
+            taken = 0
+            while steps is None or taken < steps:
+                clock.now += step_seconds
+                taken += 1
+                yield {}
+
+        def finish_trace(self, status):
+            finished.append(clock.now)
+            self.trace.finish(status, 0)
+
+        def close(self):
+            self.trace.finish("closed", 0)
+
+    monkeypatch.setattr(collect, "Agent", FakeAgent)
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text("".join(f"- {{id: t{n}, url: u, goal: g, tags: [x]}}\n" for n in range(3)))
+    collect.main(["--tasks", str(tasks), "--max-runtime", "100"])
+    assert finished == stopped and clock.now == clock_end
+    rows = list(csv.DictReader((tmp_path / "summary.csv").open()))
+    assert [row["status"] for row in rows] == statuses
+    output = capsys.readouterr().out
+    assert "skipped 2 runs" in output and re.search(r"skipped\s+2", output)
 
 
 def test_trace_stats_and_summary_rows(tmp_path, monkeypatch):

@@ -89,7 +89,7 @@ uv run --env-file .env python examples/run.py \
   --goal 'Find and open the Wikipedia article about Gödel’s incompleteness theorems.'
 ```
 
-Set `TRACE_DIR` to write one JSON line per TypeSafe decision to `<run_id>.jsonl`, plus `<run_id>.meta.json` when `run()` ends (`DONE`, `BLOCKED`, `max_steps`, or `error`) or, failing that, as `closed` on `close()`. `trace.set_verified()` records an independent outcome check in the meta file. Request bodies and text-helper inputs are logged; API keys are not. `TYPESAFE_BASE_URL` overrides the TypeSafe endpoint (default `https://api.typesafe.ai`).
+Set `TRACE_DIR` to write one JSON line per TypeSafe decision to `<run_id>.jsonl`, plus `<run_id>.meta.json` when `run()` ends (`DONE`, `BLOCKED`, `max_steps`, or `error`) or, failing that, as `closed` on `close()`. `trace.set_verified()` records an independent outcome check in the meta file. Request bodies and text-helper inputs are logged; API keys are not. A transient TypeSafe failure (connection error or invalid response) is retried once after 1 s, before any action, and recorded as `retries` with the raw response; the text helper has a 20-second timeout and one retry. `TYPESAFE_BASE_URL` overrides the TypeSafe endpoint (default `https://api.typesafe.ai`).
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. `--date YYYY-MM-DD` sets the departure date (default: 14 days from today). It does not select or book a flight.
 
@@ -99,7 +99,7 @@ Set `TRACE_DIR` to write one JSON line per TypeSafe decision to `<run_id>.jsonl`
 - **No screenshots in the default agent loop.** Jev consumes structured state. The inspector opts into screenshots; the video uses a separate continuous screencast.
 - **One browser call per snapshot.** Read visible controls, their names, values, and text atomically. Keep references to the actual DOM nodes.
 - **Validate the selected target.** Clicks check the document, form values, target, and nearby context. Animation alone does not force another prediction. Resolve current geometry and reject covered controls before input.
-- **Wait for useful state.** After typing into a combobox, wait for visible suggestions, capped at 200 ms. Other interactions get at most two animation frames or 50 ms. These reads happen after execution is logged.
+- **Wait for useful state.** After typing into a combobox, wait for visible suggestions, capped at 200 ms. Other interactions get at most two animation frames or 50 ms. A click on a control reporting `aria-expanded="false"` then re-reads every 50 ms, for up to 400 ms, until it reports expanded and new elements appear (recorded as `wait_ms`). An empty snapshot of a page that previously had elements is re-read up to 5 times at 100 ms. These reads happen after execution is logged.
 - **Keep hidden tabs rendering.** Focus emulation prevents background animation throttling without switching Chrome's visible tab.
 - **Send visible text.** Offscreen article bodies and footers do not fill the model context.
 - **Reuse an interrupted text request.** A generated value survives a stale-page retry only if the entire text-helper input is unchanged.
@@ -136,7 +136,7 @@ TRACE_DIR=traces uv run --env-file .env python scripts/collect.py --only wikiped
 uv run python scripts/collect.py --dry-run   # print resolved goals, no browser
 ```
 
-Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-%m-%d}` (any `strftime` format), and `{weekday+N}`. Unknown placeholders fail when the file loads. Each run has a 120-second budget, checked between steps. Flight tasks are checked by `jev_ultrafast/verifiers.py`, and every run appends a row to `TRACE_DIR/summary.csv` with status, steps, verification, decision latency, and input tokens.
+Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-%m-%d}` (any `strftime` format), and `{weekday+N}`. Unknown placeholders fail when the file loads. Each run has a 120-second budget, checked between steps; `--max-runtime 90m` (seconds, or `s`/`m`/`h`) also caps the batch, stopping the current run at its next step and skipping the rest. Flight tasks are checked by `jev_ultrafast/verifiers.py`, which matches city names ignoring accents and case (`Zurich` matches `Zürich, Switzerland`) and checks the return date on round trips. Every run appends a row to `TRACE_DIR/summary.csv` with status, steps, verification, decision latency, and input tokens.
 
 `uv run python scripts/traces_to_kev.py traces` keeps `DONE` runs that did not fail verification. It writes one labeled record per decision to `traces/kev/train.jsonl` and `heldout.jsonl`, split 85/15 by run. `--drop-nonprogress` removes `WAIT` and `BLOCKED` decisions.
 

@@ -59,17 +59,29 @@ def load_tasks(path, today):
             if task["verify"] not in VERIFIERS:
                 raise ValueError(f"Task {task['id']} has unknown verifier {task['verify']!r}")
             arguments = dict(task.get("verify_args", {}))
-            if "date" in arguments:
-                arguments["day"] = date.fromisoformat(resolve(arguments.pop("date"), today))
+            for name, target in (("date", "day"), ("return_date", "return_day")):
+                if name in arguments:
+                    arguments[target] = date.fromisoformat(resolve(arguments.pop(name), today))
+            if task["verify"] == "flights" and arguments.get("one_way") is False and "return_day" not in arguments:
+                raise ValueError(f"Round-trip task {task['id']} needs verify_args.return_date")
             task["verify_args"] = arguments
     return tasks
 
 
-def run_task(task):
+def duration(text):
+    match = re.fullmatch(r"(\d+)([smh]?)", text.strip())
+    if not match or int(match.group(1)) == 0:
+        raise argparse.ArgumentTypeError(f"invalid duration {text!r}; use seconds or a number with s, m, or h")
+    return int(match.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[match.group(2)]
+
+
+def run_task(task, batch_deadline=None):
     agent = None
     try:
         agent = Agent(task["url"], task["goal"])
         deadline = time.monotonic() + TIMEOUT_S
+        if batch_deadline is not None:
+            deadline = min(deadline, batch_deadline)
         for _state in agent.run():
             if time.monotonic() > deadline:
                 agent.finish_trace("timeout")
@@ -123,7 +135,7 @@ def append_summary(path, row):
         writer.writerow({key: cell(value) for key, value in row.items()})
 
 
-def report(rows):
+def report(rows, skipped=0):
     statuses = Counter(row["status"] for row in rows)
     steps = [row["steps"] for row in rows if row["steps"] is not None]
     table = [
@@ -134,6 +146,7 @@ def report(rows):
         ("error", statuses["error"]),
         ("timeout", statuses["timeout"]),
         ("max_steps", statuses["max_steps"]),
+        ("skipped", skipped),
         ("median steps", statistics.median(steps) if steps else "-"),
     ]
     for name, value in table:
@@ -146,6 +159,7 @@ def main(argv=None):
     parser.add_argument("--only", help="Run only tasks carrying this tag.")
     parser.add_argument("--repeat", type=int, help="Runs per task; overrides each task's repeat.")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved goals without opening a browser.")
+    parser.add_argument("--max-runtime", type=duration, help="Batch budget in seconds, or with s, m, or h (e.g. 90m).")
     args = parser.parse_args(argv)
     tasks = load_tasks(args.tasks, date.today())
     if args.only:
@@ -164,18 +178,25 @@ def main(argv=None):
         parser.error("TRACE_DIR must be set; traces and summary.csv are written there.")
     summary = Path(trace_dir) / "summary.csv"
     summary.parent.mkdir(parents=True, exist_ok=True)
-    rows = []
+    rows, skipped, batch_deadline = [], 0, None
     for index, (task, n) in enumerate(runs):
-        if index:
-            time.sleep(PAUSE_S)
-        row = summary_row(task, run_task(task))
+        if batch_deadline is None and args.max_runtime:
+            batch_deadline = time.monotonic() + args.max_runtime
+        pause = PAUSE_S if index else 0
+        if batch_deadline is not None and time.monotonic() + pause >= batch_deadline:
+            skipped = len(runs) - index
+            print(f"Batch runtime reached; skipped {skipped} runs.")
+            break
+        if pause:
+            time.sleep(pause)
+        row = summary_row(task, run_task(task, batch_deadline))
         append_summary(summary, row)
         rows.append(row)
         print(
             f"{task['id']}#{n}  {row['status']}  steps={row['steps']}  {row['elapsed_ms']} ms  "
             f"verified={cell(row['verified'])}"
         )
-    report(rows)
+    report(rows, skipped)
 
 
 if __name__ == "__main__":
