@@ -593,3 +593,36 @@ def test_post_json_timeout_is_per_call(monkeypatch):
     client.post.side_effect = httpx.ReadTimeout("slow")
     with pytest.raises(model.TransientModelError, match="Model connection failed"):
         model.post_json("https://example.test", "key", {}, timeout=20)
+
+
+def invalid_response(*_):
+    return {"model": "test", "answers": {"operation": {"choice": "invented", "note": "x" * 3000}}}
+
+
+def test_decision_retry_keeps_the_raw_invalid_response(runner, fake_time, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "secret-key")
+    replies = iter([invalid_response, click_response])
+    monkeypatch.setattr(model, "post_json", lambda *args: next(replies)(*args))
+    runner.command("predict")
+    raw = runner.state["decisions"][0]["retries"][0]["raw"]
+    assert raw == json.dumps(invalid_response(), ensure_ascii=False)[: model.RAW_LIMIT]
+    assert len(raw) == 2000 and "secret-key" not in raw
+
+
+def test_connection_retry_has_no_raw_response(runner, fake_time, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    replies = iter(
+        [Mock(side_effect=model.ModelConnectionError("Model connection failed; no action executed.")), click_response]
+    )
+    monkeypatch.setattr(model, "post_json", lambda *args: next(replies)(*args))
+    runner.command("predict")
+    assert "raw" not in runner.state["decisions"][0]["retries"][0]
+
+
+def test_final_invalid_response_lands_in_trace_meta(runner, fake_time, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    monkeypatch.setattr(model, "post_json", invalid_response)
+    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+        list(runner.run())
+    assert meta()["status"] == "error"
+    assert meta()["raw_response"] == json.dumps(invalid_response(), ensure_ascii=False)[: model.RAW_LIMIT]

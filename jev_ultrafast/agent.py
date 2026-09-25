@@ -109,7 +109,11 @@ class Agent:
                     if retries:
                         raise
                     retries.append(
-                        {"error": str(error), "after_ms": round((time.perf_counter() - attempt_started) * 1000)}
+                        {
+                            "error": str(error),
+                            "after_ms": round((time.perf_counter() - attempt_started) * 1000),
+                            **({"raw": error.raw} if getattr(error, "raw", None) is not None else {}),
+                        }
                     )
                 sleep(DECISION_RETRY_MS / 1000)
                 if not state["browser"].fresh(state["page"]):
@@ -263,7 +267,9 @@ class Agent:
     def finish_trace(self, status, error=None):
         started = self.state["started_at"]
         elapsed_ms = round((time.perf_counter() - started) * 1000) if started else 0
-        self.trace.finish(status, elapsed_ms, None if error is None else str(error))
+        self.trace.finish(
+            status, elapsed_ms, None if error is None else str(error), getattr(error, "raw", None)
+        )
 
     def close(self):
         self.finish_trace("closed")

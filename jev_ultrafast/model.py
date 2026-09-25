@@ -11,6 +11,7 @@ from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 TEXT_TIMEOUT_S = 20
+RAW_LIMIT = 2000
 
 
 class TransientModelError(Exception):
@@ -132,14 +133,22 @@ def choose(state, goal, history, trace=None, retries=None):
     started = time.perf_counter()
     result = post_json(base + "/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
     request_ms = round((time.perf_counter() - started) * 1000)
-    operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
+
+    def validated(answer, ids):
+        try:
+            return validate_choice(answer, ids)
+        except InvalidModelResponse as error:
+            error.raw = json.dumps(result, ensure_ascii=False, default=str)[:RAW_LIMIT]
+            raise
+
+    operation_answer = validated(result["answers"].get("operation", {}), operations)
     operation = operation_answer["choice"]
     target = None
     target_answer = None
     probabilities = {}
     if operation in targets:
         # Unused target heads cannot cause an action. Validate the head selected by the operation.
-        target_answer = validate_choice(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
+        target_answer = validated(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
         target = target_answer["choice"]
         choice = targets[operation][target]["id"]
         probabilities = {a["id"]: target_answer["probabilities"][index] for index, a in targets[operation].items()}
