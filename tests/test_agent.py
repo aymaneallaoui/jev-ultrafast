@@ -414,6 +414,58 @@ def test_other_exceptions_are_traced_as_errors(runner, monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="boom"):
         list(runner.run())
     assert meta()["status"] == "error" and meta()["error"] == "boom"
+    start, failed = trace_lines(runner, tmp_path)
+    assert start["event"] == "step_start" and failed["event"] == "step_failed" and failed["step"] == 1
+    assert failed["failed_phase"] == "snapshot" and failed["error"] == "boom" and "request" not in failed
+
+
+def trace_lines(runner, tmp_path):
+    return [json.loads(line) for line in (tmp_path / f"{runner.trace.run_id}.jsonl").read_text().splitlines()]
+
+
+def type_response(_url, _key, body):
+    return {
+        "model": "test",
+        "usage": {"input_tokens": 5},
+        "answers": {
+            "operation": choice(body["questions"]["operation"]["criteria"], "TYPE_TEXT"),
+            "type_text_target": choice(["1"], "1"),
+        },
+    }
+
+
+def test_each_step_traces_a_start_line_then_its_timed_decision(runner, monkeypatch, tmp_path):
+    traced(runner, monkeypatch, tmp_path)
+    replies = iter([click_response, type_response])
+    monkeypatch.setattr(model, "post_json", lambda *args: next(replies)(*args))
+    monkeypatch.setattr(loop, "field_text", Mock(return_value=("book", {"model": "test", "latency_ms": 10})))
+    runner.command("tick")
+    runner.command("tick")
+    lines = trace_lines(runner, tmp_path)
+    assert [(line["event"], line["step"]) for line in lines] == [
+        ("step_start", 1), ("step", 1), ("step_start", 2), ("step", 2),
+    ]
+    assert lines[0]["url"] == "https://example.test/" and 0 <= lines[0]["t_ms"] <= lines[2]["t_ms"]
+    for line in lines[1::2]:
+        assert "request" in line and "failed_phase" not in line
+        for phase in ("snapshot", "model", "execute", "wait"):
+            assert isinstance(line[f"{phase}_ms"], int) and line[f"{phase}_ms"] >= 0
+    assert "text_ms" not in lines[1] and "type_text" not in lines[1]
+    assert isinstance(lines[3]["text_ms"], int) and lines[3]["type_text"]["text"] == "book"
+    assert runner.trace.steps == 2 and runner.trace.stats()["input_tokens_total"] == 12
+
+
+def test_failed_execution_still_writes_its_decision_line(runner, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    monkeypatch.setattr(model, "post_json", click_response)
+    runner.state["browser"].act.side_effect = RuntimeError("CDP call timed out")
+    with pytest.raises(RuntimeError, match="CDP call timed out"):
+        list(runner.run())
+    start, step = trace_lines(runner, tmp_path)
+    assert start["event"] == "step_start" and step["event"] == "step" and step["step"] == 1
+    assert step["failed_phase"] == "execute" and step["error"] == "CDP call timed out"
+    assert step["answers"]["operation"]["choice"] == "CLICK" and step["execute_ms"] >= 0 and "wait_ms" not in step
+    assert meta()["status"] == "error" and meta()["steps"] == 1
 
 
 def test_navigation_during_prediction_reobserves_without_action(runner):
@@ -521,13 +573,14 @@ def test_transient_decision_failure_is_retried_once(runner, fake_time, monkeypat
     runner.command("predict")
     assert fake_time == [1.0]
     assert len(runner.state["decisions"]) == 1 and runner.trace.steps == 1
+    runner.state["browser"].act.assert_not_called()
+    act(runner)
     lines = (tmp_path / f"{runner.trace.run_id}.jsonl").read_text().splitlines()
-    assert len(lines) == 1
-    line = json.loads(lines[0])
+    assert [json.loads(line)["event"] for line in lines] == ["step_start", "step"]
+    line = json.loads(lines[1])
     assert line["step"] == 1
     assert [r["error"] for r in line["retries"]] == ["Invalid TypeSafe response; no action executed."]
     assert runner.state["decisions"][0]["retries"] == line["retries"]
-    runner.state["browser"].act.assert_not_called()
 
 
 def test_second_transient_decision_failure_raises(runner, fake_time, monkeypatch):

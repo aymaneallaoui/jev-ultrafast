@@ -242,3 +242,26 @@ def test_converter_keeps_verified_or_unverified_done_runs(tmp_path):
     assert first == {name: (tmp_path / "kev" / f"{name}.jsonl").read_text() for name in ("train", "heldout")}
     expected = int(hashlib.sha256(b"run-pass").hexdigest(), 16) % 100 < 85
     assert (traces_to_kev.split("run-pass") == "train") == expected
+
+
+def test_converter_ignores_timing_lines_and_reads_old_traces(tmp_path):
+    write_run(tmp_path, "run-old", "DONE", True, ["CLICK", "DONE"])
+    write_run(tmp_path, "run-new", "DONE", True, ["CLICK", "DONE"])
+    path = tmp_path / "run-new.jsonl"
+    decisions = [json.loads(line) for line in path.read_text().splitlines()]
+    lines = [
+        {"event": "step_start", "step": 1, "t_ms": 0, "url": "u"},
+        {"event": "step_failed", "step": 1, "snapshot_ms": 3, "failed_phase": "snapshot", "error": "stale"},
+    ]
+    for n, decision in enumerate(decisions, 1):
+        lines += [
+            {"event": "step_start", "step": n, "t_ms": 10 * n, "url": "u"},
+            {**decision, "event": "step", "snapshot_ms": 1, "model_ms": 2, "execute_ms": 3, "wait_ms": 4},
+        ]
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    counts = traces_to_kev.convert(tmp_path, tmp_path / "kev")
+    assert counts["train"] + counts["heldout"] == 4
+    assert counts["operation"] == {"CLICK": 2, "DONE": 2}
+    kev = tmp_path / "kev"
+    records = [json.loads(line) for name in ("train", "heldout") for line in (kev / f"{name}.jsonl").open()]
+    assert all(set(r) == {"state", "questions"} for r in records)

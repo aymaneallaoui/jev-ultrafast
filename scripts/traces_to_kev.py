@@ -52,6 +52,8 @@ def convert(trace_dir, out, drop_nonprogress=False):
             if not line.strip():
                 continue
             step = json.loads(line)
+            if step.get("event", "step") != "step":
+                continue
             operation = step["answers"].get("operation", {}).get("choice")
             if drop_nonprogress and operation in NONPROGRESS:
                 continue

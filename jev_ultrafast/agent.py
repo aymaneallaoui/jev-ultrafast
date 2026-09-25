@@ -92,62 +92,90 @@ class Agent:
                 raise ValueError("Start a demo first")
             if state["started_at"] is None:
                 state["started_at"] = time.perf_counter()
+            self.trace.start_step(round((time.perf_counter() - state["started_at"]) * 1000), state["page"]["url"])
+            try:
+                self.predict()
+            except Exception as error:
+                self.trace.end_step(error)
+                raise
+        elif name == "act":
+            try:
+                self.act(body)
+            except Exception as error:
+                self.trace.end_step(error)
+                raise
+            self.trace.end_step()
+        else:
+            raise ValueError("Unknown command")
+        return self.snapshot()
+
+    def predict(self):
+        state, timed = self.state, self.trace.timed
+        with timed("snapshot"):
             if not state["browser"].fresh(state["page"]):
                 state["page"] = self.observe(state["page"])
-            state["decision"] = None
-            if state["status"] in {"done", "blocked"}:
-                raise ValueError("This run has stopped. Start a fresh demo.")
-            if len(state["decisions"]) >= MAX_STEPS * 2:
-                raise BudgetExhausted("Reached the demo's model-call budget")
-            retries = []
-            while True:
-                attempt_started = time.perf_counter()
-                try:
+        state["decision"] = None
+        if state["status"] in {"done", "blocked"}:
+            raise ValueError("This run has stopped. Start a fresh demo.")
+        if len(state["decisions"]) >= MAX_STEPS * 2:
+            raise BudgetExhausted("Reached the demo's model-call budget")
+        retries = []
+        while True:
+            attempt_started = time.perf_counter()
+            try:
+                with timed("model"):
                     state["decision"] = choose(state["page"], state["goal"], state["history"], self.trace, retries)
-                    break
-                except TransientModelError as error:
-                    if retries:
-                        raise
-                    retries.append(
-                        {
-                            "error": str(error),
-                            "after_ms": round((time.perf_counter() - attempt_started) * 1000),
-                            **({"raw": error.raw} if getattr(error, "raw", None) is not None else {}),
-                        }
-                    )
+                break
+            except TransientModelError as error:
+                if retries:
+                    raise
+                retries.append(
+                    {
+                        "error": str(error),
+                        "after_ms": round((time.perf_counter() - attempt_started) * 1000),
+                        **({"raw": error.raw} if getattr(error, "raw", None) is not None else {}),
+                    }
+                )
+            with timed("model"):
                 sleep(DECISION_RETRY_MS / 1000)
+            with timed("snapshot"):
                 if not state["browser"].fresh(state["page"]):
                     state["page"] = self.observe(state["page"])
-            state["decisions"].append(
-                {
-                    **state["decision"],
-                    **({"retries": retries} if retries else {}),
-                    "fingerprint": state["page"]["fingerprint"],
-                    "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
-                }
-            )
-            state["status"] = "predicted"
-        elif name == "act":
-            decision, page = state["decision"], state["page"]
-            if not decision or body.get("fingerprint") != page["fingerprint"]:
-                raise ValueError("Observe and choose before acting")
-            # Consume once, before any mutation or model call. A retry cannot double-click.
-            state["decision"] = None
-            selected = decision["choice"]
-            if selected in {"DONE", "BLOCKED"}:
-                if not state["browser"].fresh(page):
-                    state["status"] = "ready"
-                    raise StalePage("Page changed since the decision. Choose again.")
-                state["status"] = "done" if selected == "DONE" else "blocked"
-                state["plan_index"] = int(selected == "DONE")
-                state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
-                return self.snapshot()
-            action = next(a for a in page["actions"] if a["id"] == selected)
-            if len(state["history"]) >= MAX_STEPS:
-                state["status"] = "blocked"
-                raise BudgetExhausted(f"Stopped at the {MAX_STEPS}-action demo budget")
-            text, helper = None, None
-            if action["kind"] == "fill":
+        state["decisions"].append(
+            {
+                **state["decision"],
+                **({"retries": retries} if retries else {}),
+                "fingerprint": state["page"]["fingerprint"],
+                "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+            }
+        )
+        state["status"] = "predicted"
+
+    def act(self, body):
+        state, timed = self.state, self.trace.timed
+        decision, page = state["decision"], state["page"]
+        if not decision or body.get("fingerprint") != page["fingerprint"]:
+            raise ValueError("Observe and choose before acting")
+        # Consume once, before any mutation or model call. A retry cannot double-click.
+        state["decision"] = None
+        selected = decision["choice"]
+        if selected in {"DONE", "BLOCKED"}:
+            with timed("execute"):
+                fresh = state["browser"].fresh(page)
+            if not fresh:
+                state["status"] = "ready"
+                raise StalePage("Page changed since the decision. Choose again.")
+            state["status"] = "done" if selected == "DONE" else "blocked"
+            state["plan_index"] = int(selected == "DONE")
+            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+            return
+        action = next(a for a in page["actions"] if a["id"] == selected)
+        if len(state["history"]) >= MAX_STEPS:
+            state["status"] = "blocked"
+            raise BudgetExhausted(f"Stopped at the {MAX_STEPS}-action demo budget")
+        text, helper = None, None
+        if action["kind"] == "fill":
+            with timed("text"):
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
                 context = field_context(state["goal"], action, page, state["history"])
@@ -157,57 +185,56 @@ class Agent:
                     text, helper = self.generate_text(context, action["label"])
                     self.pending_text = (context, text, helper)
                 self.trace.type_text(context, text)
-            # Browser.act checks freshness immediately before input, including after text generation.
+        # Browser.act checks freshness immediately before input, including after text generation.
+        with timed("execute"):
             state["browser"].act(action, page, text=text)
-            self.pending_text = None
-            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
-            # Record execution before observing. A stale post-action observation must not erase the action.
-            state["history"].append(
-                {
-                    "step": len(state["history"]) + 1,
-                    "action": action["label"],
-                    "kind": action["kind"],
-                    "choice": selected,
-                    "probability": decision["probabilities"][selected],
-                    "confidence": decision["confidence"],
-                    "latency_ms": decision["latency_ms"],
-                    "text": text,
-                    "text_helper": helper["model"] if helper else None,
-                    "text_latency_ms": helper["latency_ms"] if helper else 0,
-                    "operation": decision["operation"],
-                    "target": decision["target"],
-                    "page_changed": None,
-                    "wait_ms": 0,
-                    "url": page["url"],
-                    "usage": decision["usage"],
-                    "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
-                    "elapsed_ms": state["elapsed_ms"],
-                }
-            )
+        self.pending_text = None
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        # Record execution before observing. A stale post-action observation must not erase the action.
+        state["history"].append(
+            {
+                "step": len(state["history"]) + 1,
+                "action": action["label"],
+                "kind": action["kind"],
+                "choice": selected,
+                "probability": decision["probabilities"][selected],
+                "confidence": decision["confidence"],
+                "latency_ms": decision["latency_ms"],
+                "text": text,
+                "text_helper": helper["model"] if helper else None,
+                "text_latency_ms": helper["latency_ms"] if helper else 0,
+                "operation": decision["operation"],
+                "target": decision["target"],
+                "page_changed": None,
+                "wait_ms": 0,
+                "url": page["url"],
+                "usage": decision["usage"],
+                "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
+                "elapsed_ms": state["elapsed_ms"],
+            }
+        )
+        with timed("wait"):
             state["page"] = self.observe(page)
             wait_ms = 0
             if action["kind"] == "click" and action.get("expanded") == "false":
                 wait_ms = self.await_expansion(action, page)
-            state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
-            state["history"][-1].update(
-                page_changed=state["page"]["fingerprint"] != page["fingerprint"],
-                url=state["page"]["url"],
-                elapsed_ms=state["elapsed_ms"],
-                wait_ms=wait_ms,
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        state["history"][-1].update(
+            page_changed=state["page"]["fingerprint"] != page["fingerprint"],
+            url=state["page"]["url"],
+            elapsed_ms=state["elapsed_ms"],
+            wait_ms=wait_ms,
+        )
+        if state["record"]:
+            (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
+                base64.b64decode(state["page"]["screenshot"])
             )
-            if state["record"]:
-                (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
-                    base64.b64decode(state["page"]["screenshot"])
-                )
-            repeated = state["history"][-3:]
-            state["status"] = (
-                "blocked"
-                if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
-                else "ready"
-            )
-        else:
-            raise ValueError("Unknown command")
-        return self.snapshot()
+        repeated = state["history"][-3:]
+        state["status"] = (
+            "blocked"
+            if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
+            else "ready"
+        )
 
     def observe(self, previous):
         page = self.state["browser"].observe(screenshot=self.screenshots)
