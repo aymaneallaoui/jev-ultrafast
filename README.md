@@ -91,7 +91,7 @@ uv run --env-file .env python examples/run.py \
 
 Set `TRACE_DIR` to write one JSON line per TypeSafe decision to `<run_id>.jsonl`, plus `<run_id>.meta.json` when `run()` ends (`DONE`, `BLOCKED`, `max_steps`, or `error`) or, failing that, as `closed` on `close()`. `trace.set_verified()` records an independent outcome check in the meta file. Request bodies and text-helper inputs are logged; API keys are not. `TYPESAFE_BASE_URL` overrides the TypeSafe endpoint (default `https://api.typesafe.ai`).
 
-`uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
+`uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. `--date YYYY-MM-DD` sets the departure date (default: 14 days from today). It does not select or book a flight.
 
 ## Why it moves
 
@@ -126,6 +126,19 @@ In six alternating runs with identical models and settings, both versions passed
 The same policy opened the requested Wikipedia article in **2.798 s** and passed a local hotel search/filter task in **1.896 s**. Runs, failures, source hashes, and measurement boundaries are in [performance.md](docs/performance.md).
 
 A `DONE` choice still requires independent outcome verification. The DOM reader handles common HTML and ARIA controls, not the full accessible-name specification. Shadow roots, frames, canvas, uploads, pop-up tabs, nested scrolling, and arbitrary keyboard widgets remain outside this MVP. Owned tabs share the existing Chrome profile.
+
+## Collecting traces
+
+`scripts/collect.py` runs the goals in [tasks.yaml](tasks.yaml) one after another. It makes live model calls and needs `TRACE_DIR`:
+
+```bash
+TRACE_DIR=traces uv run --env-file .env python scripts/collect.py --only wikipedia --repeat 2
+uv run python scripts/collect.py --dry-run   # print resolved goals, no browser
+```
+
+Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-%m-%d}` (any `strftime` format), and `{weekday+N}`. Unknown placeholders fail when the file loads. Each run has a 120-second budget, checked between steps. Flight tasks are checked by `jev_ultrafast/verifiers.py`, and every run appends a row to `TRACE_DIR/summary.csv` with status, steps, verification, decision latency, and input tokens.
+
+`uv run python scripts/traces_to_kev.py traces` keeps `DONE` runs that did not fail verification. It writes one labeled record per decision to `traces/kev/train.jsonl` and `heldout.jsonl`, split 85/15 by run. `--drop-nonprogress` removes `WAIT` and `BLOCKED` decisions.
 
 ## Development
 

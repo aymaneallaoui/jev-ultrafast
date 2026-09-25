@@ -1,8 +1,10 @@
 """Offline contracts for a dynamic operation/target policy. No paid APIs."""
 
+import base64
 import json
 import time
 from copy import deepcopy
+from datetime import date
 from unittest.mock import Mock
 
 import pytest
@@ -331,12 +333,31 @@ def test_flight_verification_rejects_wrong_trip(changed):
             ]
         ],
     }
-    assert verify(actual)["passed"]
+    assert verify(actual, date(2026, 9, 20))["passed"]
     if changed == "year":
         actual["text"] = actual["text"].replace("2026", "2027")
     else:
         next(a for a in actual["actions"] if a["label"] == changed)["value"] = "wrong"
-    assert not verify(actual)["passed"]
+    assert not verify(actual, date(2026, 9, 20))["passed"]
+
+
+def test_flight_date_forms_reproduce_the_recorded_run():
+    from examples.flights import date_forms, goal
+
+    forms = date_forms(date(2026, 9, 20))
+    assert forms == {
+        "goal": "September 20, 2026",
+        "iso": "2026-09-20",
+        "departure": "Sun, Sep 20",
+        "flight": "Sunday, September 20",
+    }
+    assert goal(date(2026, 9, 20)) == (
+        "Find one-way flights from Zurich to London on September 20, 2026, for one adult in economy. "
+        "Stop when matching flight options are visible. Do not select or book a flight."
+    )
+    recorded_tfs = "CBwQAhooEgoyMDI2LTA5LTIwagwIAxIIL20vMDg5NjZyDAgDEggvbS8wNGpwbEABSAFwAYIBCwj___________8BmAEC"
+    assert forms["iso"].encode() in base64.urlsafe_b64decode(recorded_tfs + "=" * (-len(recorded_tfs) % 4))
+    assert date_forms(date(2026, 3, 1))["departure"] == "Sun, Mar 1"
 
 
 @pytest.mark.parametrize(

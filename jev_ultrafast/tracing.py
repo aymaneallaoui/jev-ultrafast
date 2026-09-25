@@ -3,6 +3,7 @@
 import json
 import os
 import secrets
+import statistics
 import time
 from pathlib import Path
 
@@ -17,10 +18,16 @@ class Trace:
         self.pending = None
         self.verified = None
         self.meta = None
+        self.latencies = []
+        self.input_tokens = None
 
     def step(self, goal, request, result, latency_ms, *, awaiting_text=False):
         self.flush()
         self.steps += 1
+        self.latencies.append(latency_ms)
+        tokens = (result.get("usage") or {}).get("input_tokens")
+        if isinstance(tokens, int):
+            self.input_tokens = (self.input_tokens or 0) + tokens
         self.pending = {
             "step": self.steps,
             "goal": goal,
@@ -43,6 +50,13 @@ class Trace:
             self.directory.mkdir(parents=True, exist_ok=True)
             with open(self.directory / f"{self.run_id}.jsonl", "a", encoding="utf-8") as file:
                 file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def stats(self):
+        return {
+            "jev_latency_p50_ms": round(statistics.median(self.latencies)) if self.latencies else None,
+            "jev_latency_max_ms": max(self.latencies, default=None),
+            "input_tokens_total": self.input_tokens,
+        }
 
     @property
     def finished(self):
