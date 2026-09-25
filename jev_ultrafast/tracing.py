@@ -21,7 +21,7 @@ class Trace:
         self.latencies = []
         self.input_tokens = None
 
-    def step(self, goal, request, result, latency_ms, *, awaiting_text=False):
+    def step(self, goal, request, result, latency_ms, *, awaiting_text=False, retries=None):
         self.flush()
         self.steps += 1
         self.latencies.append(latency_ms)
@@ -36,6 +36,8 @@ class Trace:
             "latency_ms": latency_ms,
             "usage": result.get("usage"),
         }
+        if retries:
+            self.pending["retries"] = retries
         if not awaiting_text:
             self.flush()
 

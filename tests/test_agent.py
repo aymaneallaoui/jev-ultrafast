@@ -422,3 +422,174 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+@pytest.fixture
+def fake_time(monkeypatch):
+    now, sleeps = [0.0], []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(loop, "clock", lambda: now[0])
+    monkeypatch.setattr(loop, "sleep", sleep)
+    return sleeps
+
+
+def combobox_page(expanded="false", options=0):
+    p = page()
+    p["actions"][3:3] = [
+        {"id": "e4", "kind": "click", "label": "Where to?", "role": "combobox", "value": "", "node": 30,
+         "expanded": expanded},
+        *({"id": f"e{5 + i}", "kind": "click", "label": f"City {i}", "role": "option", "value": "", "node": 40 + i}
+          for i in range(options)),
+    ]
+    p["fingerprint"] = fingerprint(p)
+    return p
+
+
+def empty_page():
+    p = page()
+    p["text"], p["actions"] = "", p["actions"][-1:]
+    p["fingerprint"] = fingerprint(p)
+    return p
+
+
+def act(runner):
+    return runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+
+
+def test_click_on_collapsed_control_observes_until_it_expands(runner, fake_time):
+    runner.state["page"], runner.state["decision"] = combobox_page(), decision("e4")
+    expanded = combobox_page("true", options=2)
+    # Expanded without new elements is not enough; the third poll has both.
+    runner.state["browser"].observe.side_effect = [
+        combobox_page(), combobox_page("true"), combobox_page(), expanded,
+    ]
+    act(runner)
+    runner.state["browser"].act.assert_called_once()
+    assert runner.state["browser"].observe.call_count == 4
+    assert fake_time == [0.05] * 3
+    assert runner.state["page"] is expanded
+    assert runner.state["history"][-1]["wait_ms"] == 150
+
+
+def test_expansion_wait_stops_at_the_limit(runner, fake_time):
+    runner.state["page"], runner.state["decision"] = combobox_page(), decision("e4")
+    runner.state["browser"].observe.return_value = combobox_page()
+    act(runner)
+    runner.state["browser"].act.assert_called_once()
+    assert runner.state["browser"].observe.call_count == 1 + loop.EXPAND_LIMIT_MS // loop.EXPAND_POLL_MS
+    assert runner.state["history"][-1]["wait_ms"] == loop.EXPAND_LIMIT_MS
+
+
+def test_clicks_without_collapsed_state_do_not_wait(runner, fake_time):
+    runner.state["decision"] = decision("e3")
+    act(runner)
+    assert runner.state["browser"].observe.call_count == 1 and fake_time == []
+    assert runner.state["history"][-1]["wait_ms"] == 0
+
+
+def test_empty_snapshot_is_reobserved_before_the_model_sees_it(runner, fake_time, monkeypatch):
+    runner.state["decision"] = decision("e3")
+    runner.state["browser"].observe.side_effect = [empty_page(), empty_page(), page()]
+    act(runner)
+    assert fake_time == [0.1, 0.1]
+    sent = []
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", lambda url, key, body: sent.append(body) or click_response(url, key, body))
+    runner.command("predict")
+    assert len(sent) == 1 and len(sent[0]["state"]["elements"]) == 2
+
+
+def test_persistently_empty_snapshot_proceeds_after_retries(runner, fake_time):
+    runner.state["decision"] = decision("e3")
+    runner.state["browser"].observe.return_value = empty_page()
+    act(runner)
+    assert runner.state["browser"].observe.call_count == 1 + loop.EMPTY_RETRIES
+    assert fake_time == [0.1] * loop.EMPTY_RETRIES
+    assert runner.state["page"]["actions"] == empty_page()["actions"]
+
+
+def test_transient_decision_failure_is_retried_once(runner, fake_time, monkeypatch, tmp_path):
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    runner.trace = Trace("https://example.test/", "Find a book")
+    replies = iter([lambda *_: {"model": "test", "answers": {"operation": {"choice": "invented"}}}, click_response])
+    monkeypatch.setattr(model, "post_json", lambda *args: next(replies)(*args))
+    runner.command("predict")
+    assert fake_time == [1.0]
+    assert len(runner.state["decisions"]) == 1 and runner.trace.steps == 1
+    lines = (tmp_path / f"{runner.trace.run_id}.jsonl").read_text().splitlines()
+    assert len(lines) == 1
+    line = json.loads(lines[0])
+    assert line["step"] == 1
+    assert [r["error"] for r in line["retries"]] == ["Invalid TypeSafe response; no action executed."]
+    assert runner.state["decisions"][0]["retries"] == line["retries"]
+    runner.state["browser"].act.assert_not_called()
+
+
+def test_second_transient_decision_failure_raises(runner, fake_time, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    post = Mock(side_effect=model.ModelConnectionError("Model connection failed; no action executed."))
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(RuntimeError, match="Model connection failed"):
+        runner.command("predict")
+    assert post.call_count == 2 and fake_time == [1.0]
+    assert runner.state["decisions"] == [] and runner.trace.steps == 0
+
+
+def test_non_transient_decision_failure_is_not_retried(runner, fake_time, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    post = Mock(side_effect=RuntimeError("Model provider returned HTTP 500; no action executed."))
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        runner.command("predict")
+    assert post.call_count == 1 and fake_time == []
+
+
+def text_reply(content):
+    return {"choices": [{"message": {"content": content}}]}
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [text_reply("Thinking: book"), model.ModelConnectionError("Model connection failed; no action executed.")],
+)
+def test_text_helper_retries_once_and_records_both_attempts(runner, monkeypatch, failure):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(side_effect=[failure, text_reply('{"text":"book"}')])
+    monkeypatch.setattr(model, "post_json", post)
+    act(runner)
+    assert [c.kwargs["timeout"] for c in post.call_args_list] == [model.TEXT_TIMEOUT_S] * 2 == [20, 20]
+    calls = runner.state["text_calls"]
+    assert [c.get("failed", False) for c in calls] == [True, False] and calls[1]["value"] == "book"
+    runner.state["browser"].act.assert_called_once()
+    assert runner.state["browser"].act.call_args.kwargs["text"] == "book"
+
+
+def test_text_helper_failing_twice_reports_raw_content(runner, monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    post = Mock(return_value=text_reply("x" * 500))
+    monkeypatch.setattr(model, "post_json", post)
+    with pytest.raises(ValueError, match="nothing typed") as error:
+        act(runner)
+    assert f"Model returned: '{'x' * 300}'" in str(error.value) and "x" * 301 not in str(error.value)
+    assert post.call_count == 2 and [c["failed"] for c in runner.state["text_calls"]] == [True, True]
+    runner.state["browser"].act.assert_not_called()
+    assert runner.pending_text is None
+
+
+def test_post_json_timeout_is_per_call(monkeypatch):
+    import httpx
+
+    response = Mock(status_code=200, is_error=False, json=Mock(return_value={}))
+    client = Mock(post=Mock(return_value=response))
+    monkeypatch.setattr(model, "CLIENT", client)
+    model.post_json("https://example.test", "key", {})
+    model.post_json("https://example.test", "key", {}, timeout=20)
+    assert [c.kwargs["timeout"] for c in client.post.call_args_list] == [httpx.USE_CLIENT_DEFAULT, 20]
+    client.post.side_effect = httpx.ReadTimeout("slow")
+    with pytest.raises(model.TransientModelError, match="Model connection failed"):
+        model.post_json("https://example.test", "key", {}, timeout=20)

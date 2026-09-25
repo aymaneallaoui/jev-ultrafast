@@ -10,14 +10,27 @@ import httpx
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
+TEXT_TIMEOUT_S = 20
 
 
-def post_json(url, key, body):
+class TransientModelError(Exception):
+    """A model call that failed before anything executed and may succeed if asked again."""
+
+
+class ModelConnectionError(TransientModelError, RuntimeError):
+    pass
+
+
+class InvalidModelResponse(TransientModelError, ValueError):
+    pass
+
+
+def post_json(url, key, body, timeout=httpx.USE_CLIENT_DEFAULT):
     for attempt in range(3):
         try:
-            response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+            response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"}, timeout=timeout)
         except httpx.HTTPError:
-            raise RuntimeError("Model connection failed; no action executed.") from None
+            raise ModelConnectionError("Model connection failed; no action executed.") from None
         if response.status_code in {429, 529, 503} and attempt < 2:
             time.sleep(0.5 * 2**attempt)
             continue
@@ -41,7 +54,7 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError("Invalid TypeSafe response; no action executed.")
+        raise InvalidModelResponse("Invalid TypeSafe response; no action executed.")
     return answer
 
 
@@ -78,7 +91,7 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history, trace=None):
+def choose(state, goal, history, trace=None, retries=None):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -134,7 +147,7 @@ def choose(state, goal, history, trace=None):
         choice = controls[operation]["id"] if operation in controls else operation
         probabilities[choice] = operation_answer["probabilities"][operation]
     if trace:
-        trace.step(goal, body, result, request_ms, awaiting_text=operation == "TYPE_TEXT")
+        trace.step(goal, body, result, request_ms, awaiting_text=operation == "TYPE_TEXT", retries=retries)
     return {
         "choice": choice,
         "operation": operation,
@@ -161,12 +174,16 @@ def field_context(goal, action, page, history):
     }
 
 
+def text_model():
+    return os.environ.get("TEXT_MODEL", "deepseek-chat")
+
+
 def field_text(context):
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
         raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    model = os.environ.get("TEXT_MODEL", "deepseek-chat")
+    model = text_model()
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}
     if os.environ.get("TEXT_MODEL_REASONING") == "none":
         reasoning = {"reasoning": {"enabled": False}}
@@ -187,14 +204,20 @@ def field_text(context):
                 },
             ],
         },
+        timeout=TEXT_TIMEOUT_S,
     )
+    content = None
     try:
-        output = json.loads(result["choices"][0]["message"]["content"])
+        content = result["choices"][0]["message"]["content"]
+        output = json.loads(content)
         value = output["text"]
         if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
             raise ValueError()
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("Text helper returned no valid field value; nothing typed.") from None
+    except (ValueError, KeyError, TypeError, IndexError):
+        raw = content if isinstance(content, str) else json.dumps(result, default=str)
+        raise InvalidModelResponse(
+            f"Text helper returned no valid field value; nothing typed. Model returned: {raw[:300]!r}"
+        ) from None
     return value, {
         "model": model,
         "latency_ms": round((time.perf_counter() - started) * 1000),

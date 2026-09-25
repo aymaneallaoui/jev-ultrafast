@@ -5,9 +5,28 @@ import time
 from pathlib import Path
 
 from .browser import Browser, StalePage
-from .model import action_space, choose, field_context, field_text
+from .model import TransientModelError, action_space, choose, field_context, field_text, text_model
 from .questions import MAX_STEPS
 from .tracing import Trace
+
+EXPAND_POLL_MS = 50
+EXPAND_LIMIT_MS = 400
+EMPTY_RETRIES = 5
+EMPTY_RETRY_MS = 100
+DECISION_RETRY_MS = 1000
+clock = time.monotonic
+sleep = time.sleep
+
+
+def elements(page):
+    return {a["node"] for a in page["actions"] if "node" in a}
+
+
+def expanded(action, page):
+    same = [a for a in page["actions"] if a.get("node") == action["node"]] or [
+        a for a in page["actions"] if a.get("role") == action["role"] and a["label"] == action["label"]
+    ]
+    return any(a.get("expanded") == "true" for a in same)
 
 
 class BudgetExhausted(ValueError):
@@ -65,7 +84,7 @@ class Agent:
             except StalePage:
                 state["decision"] = None
                 state["status"] = "ready"
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                state["page"] = self.observe(state["page"])
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                 return self.snapshot()
         elif name == "predict":
@@ -74,16 +93,31 @@ class Agent:
             if state["started_at"] is None:
                 state["started_at"] = time.perf_counter()
             if not state["browser"].fresh(state["page"]):
-                state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                state["page"] = self.observe(state["page"])
             state["decision"] = None
             if state["status"] in {"done", "blocked"}:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise BudgetExhausted("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"], self.trace)
+            retries = []
+            while True:
+                attempt_started = time.perf_counter()
+                try:
+                    state["decision"] = choose(state["page"], state["goal"], state["history"], self.trace, retries)
+                    break
+                except TransientModelError as error:
+                    if retries:
+                        raise
+                    retries.append(
+                        {"error": str(error), "after_ms": round((time.perf_counter() - attempt_started) * 1000)}
+                    )
+                sleep(DECISION_RETRY_MS / 1000)
+                if not state["browser"].fresh(state["page"]):
+                    state["page"] = self.observe(state["page"])
             state["decisions"].append(
                 {
                     **state["decision"],
+                    **({"retries": retries} if retries else {}),
                     "fingerprint": state["page"]["fingerprint"],
                     "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
                 }
@@ -116,9 +150,8 @@ class Agent:
                 if self.pending_text and self.pending_text[0] == context:
                     _, text, helper = self.pending_text
                 else:
-                    text, helper = field_text(context)
+                    text, helper = self.generate_text(context, action["label"])
                     self.pending_text = (context, text, helper)
-                    state["text_calls"].append({**helper, "field": action["label"], "value": text})
                 self.trace.type_text(context, text)
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
@@ -140,18 +173,23 @@ class Agent:
                     "operation": decision["operation"],
                     "target": decision["target"],
                     "page_changed": None,
+                    "wait_ms": 0,
                     "url": page["url"],
                     "usage": decision["usage"],
                     "executed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
                     "elapsed_ms": state["elapsed_ms"],
                 }
             )
-            state["page"] = state["browser"].observe(screenshot=self.screenshots)
+            state["page"] = self.observe(page)
+            wait_ms = 0
+            if action["kind"] == "click" and action.get("expanded") == "false":
+                wait_ms = self.await_expansion(action, page)
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             state["history"][-1].update(
                 page_changed=state["page"]["fingerprint"] != page["fingerprint"],
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
+                wait_ms=wait_ms,
             )
             if state["record"]:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
@@ -166,6 +204,47 @@ class Agent:
         else:
             raise ValueError("Unknown command")
         return self.snapshot()
+
+    def observe(self, previous):
+        page = self.state["browser"].observe(screenshot=self.screenshots)
+        for _ in range(EMPTY_RETRIES):
+            if page["url"] != previous["url"] or elements(page) or page["text"].strip() or not elements(previous):
+                break
+            sleep(EMPTY_RETRY_MS / 1000)
+            page = self.state["browser"].observe(screenshot=self.screenshots)
+        return page
+
+    def await_expansion(self, action, before):
+        """Observe until the clicked control reports expanded and new elements appear. Nothing is executed."""
+        started, count = clock(), len(elements(before))
+        while True:
+            waited = round((clock() - started) * 1000)
+            page = self.state["page"]
+            if (expanded(action, page) and len(elements(page)) > count) or waited >= EXPAND_LIMIT_MS:
+                return waited
+            sleep(min(EXPAND_POLL_MS, EXPAND_LIMIT_MS - waited) / 1000)
+            self.state["page"] = self.state["browser"].observe(screenshot=self.screenshots)
+
+    def generate_text(self, context, field):
+        for attempt in range(2):
+            started = time.perf_counter()
+            try:
+                text, helper = field_text(context)
+            except TransientModelError as error:
+                self.state["text_calls"].append(
+                    {
+                        "model": text_model(),
+                        "latency_ms": round((time.perf_counter() - started) * 1000),
+                        "field": field,
+                        "failed": True,
+                        "error": str(error),
+                    }
+                )
+                if attempt:
+                    raise
+                continue
+            self.state["text_calls"].append({**helper, "field": field, "value": text})
+            return text, helper
 
     def run(self):
         while self.state["status"] not in {"done", "blocked"}:
