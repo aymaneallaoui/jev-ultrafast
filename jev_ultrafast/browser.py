@@ -18,6 +18,10 @@ class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
 
+class TargetRefused(StalePage):
+    """The observed target was not reachable at its current position; nothing was executed."""
+
+
 class Browser:
     def __init__(self, url):
         own_window = os.environ.get("JEV_OWN_WINDOW") == "1"
@@ -162,11 +166,13 @@ def browser_operation(request):
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")
             # Code-owned node IDs refer to actual observed elements, never model-generated selectors.
+            # scrollIntoView only reveals a target clipped by an inner scroller; the hit-test still decides.
             target = evaluate("""(action => {
               const e=window.__jevFast?.nodes.get(action.node);
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
+              e.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
               const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
               if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
               if (!e.contains(document.elementFromPoint(x,y))) return null;
@@ -182,7 +188,7 @@ def browser_operation(request):
             if target is None:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
-                raise StalePage("Target changed or is covered. Observe again.")
+                raise TargetRefused("Target changed or is covered. Observe again.")
             if kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):

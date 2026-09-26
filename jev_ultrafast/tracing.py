@@ -105,7 +105,7 @@ class Trace:
     def finished(self):
         return self.meta is not None
 
-    def finish(self, status, elapsed_ms, error=None, raw_response=None):
+    def finish(self, status, elapsed_ms, error=None, raw_response=None, reason=None):
         self.end_step()
         self.flush()
         if self.finished:
@@ -122,6 +122,8 @@ class Trace:
             self.meta["error"] = error
         if raw_response is not None:
             self.meta["raw_response"] = raw_response
+        if reason is not None:
+            self.meta["reason"] = reason
         self.write_meta()
 
     def set_verified(self, value):

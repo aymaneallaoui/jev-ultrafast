@@ -11,7 +11,7 @@ import pytest
 
 from jev_ultrafast import agent as loop
 from jev_ultrafast import model
-from jev_ultrafast.browser import StalePage, browser_operation, fingerprint
+from jev_ultrafast.browser import StalePage, TargetRefused, browser_operation, fingerprint
 from jev_ultrafast.tracing import Trace
 
 
@@ -679,3 +679,69 @@ def test_final_invalid_response_lands_in_trace_meta(runner, fake_time, monkeypat
         list(runner.run())
     assert meta()["status"] == "error"
     assert meta()["raw_response"] == json.dumps(invalid_response(), ensure_ascii=False)[: model.RAW_LIMIT]
+
+
+def refused():
+    return TargetRefused("Target changed or is covered. Observe again.")
+
+
+def test_same_target_refused_three_times_blocks_with_reason(runner, monkeypatch, tmp_path):
+    meta = traced(runner, monkeypatch, tmp_path)
+    monkeypatch.setattr(model, "post_json", click_response)
+    runner.state["browser"].act.side_effect = refused()
+    states = list(runner.run())
+    reason = "Target refused 3 times: Go: Target changed or is covered. Observe again."
+    assert [s["status"] for s in states] == ["ready", "ready", "blocked"]
+    assert runner.state["blocked_reason"] == states[-1]["blocked_reason"] == reason
+    assert len(runner.state["decisions"]) == 3 and runner.state["history"] == []
+    assert [r["target"] for r in runner.state["refusals"]] == [20] * 3
+    assert meta()["status"] == "BLOCKED" and meta()["reason"] == reason and meta()["steps"] == 3
+    steps = [line for line in trace_lines(runner, tmp_path) if line["event"] == "step"]
+    assert [(line["failed_phase"], line["error"]) for line in steps] == [
+        ("execute", "Target changed or is covered. Observe again.")
+    ] * 3
+
+
+def test_successful_action_resets_the_refusal_streak(runner, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    runner.state["status"] = "ready"
+    monkeypatch.setattr(model, "post_json", click_response)
+    runner.state["browser"].act.side_effect = [refused(), refused(), None, refused(), refused(), refused()]
+    for _ in range(5):
+        runner.command("tick")
+    assert runner.state["status"] == "ready" and len(runner.state["history"]) == 1
+    runner.command("tick")
+    assert runner.state["status"] == "blocked" and runner.state["blocked_reason"].startswith("Target refused 3")
+
+
+def test_alternating_refused_targets_stay_bounded_by_the_budget(runner, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    runner.state["status"] = "ready"
+    targets = iter(["1", "2"] * loop.MAX_STEPS)
+
+    def post(_url, _key, body):
+        return {
+            "model": "test",
+            "answers": {
+                "operation": choice(body["questions"]["operation"]["criteria"], "CLICK"),
+                "click_target": choice(["1", "2"], next(targets)),
+            },
+        }
+
+    monkeypatch.setattr(model, "post_json", post)
+    runner.state["browser"].act.side_effect = refused()
+    with pytest.raises(loop.BudgetExhausted):
+        list(runner.run())
+    assert len(runner.state["decisions"]) == loop.MAX_STEPS * 2
+    assert {r["target"] for r in runner.state["refusals"]} == {10, 20}
+    assert runner.state["status"] == "ready" and "blocked_reason" not in runner.state
+
+
+def test_page_change_refusals_do_not_count_toward_the_target_streak(runner, monkeypatch):
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    runner.state["status"] = "ready"
+    monkeypatch.setattr(model, "post_json", click_response)
+    runner.state["browser"].act.side_effect = StalePage("Page changed since this decision. Observe again.")
+    for _ in range(4):
+        runner.command("tick")
+    assert runner.state["status"] == "ready" and "refusals" not in runner.state

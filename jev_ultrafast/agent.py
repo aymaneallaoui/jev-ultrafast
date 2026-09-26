@@ -4,7 +4,7 @@ import base64
 import time
 from pathlib import Path
 
-from .browser import Browser, StalePage
+from .browser import Browser, StalePage, TargetRefused
 from .model import TransientModelError, action_space, choose, field_context, field_text, text_model
 from .questions import MAX_STEPS
 from .tracing import Trace
@@ -14,6 +14,7 @@ EXPAND_LIMIT_MS = 400
 EMPTY_RETRIES = 5
 EMPTY_RETRY_MS = 100
 DECISION_RETRY_MS = 1000
+REFUSAL_LIMIT = 3
 clock = time.monotonic
 sleep = time.sleep
 
@@ -55,6 +56,8 @@ class Agent:
             page=page,
             decision=None,
             history=[],
+            refusals=[],
+            blocked_reason=None,
             status="ready",
             plan=plan,
             plan_index=0,
@@ -83,7 +86,8 @@ class Agent:
                 return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
             except StalePage:
                 state["decision"] = None
-                state["status"] = "ready"
+                if state["status"] != "blocked":
+                    state["status"] = "ready"
                 state["page"] = self.observe(state["page"])
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                 return self.snapshot()
@@ -187,7 +191,11 @@ class Agent:
                 self.trace.type_text(context, text)
         # Browser.act checks freshness immediately before input, including after text generation.
         with timed("execute"):
-            state["browser"].act(action, page, text=text)
+            try:
+                state["browser"].act(action, page, text=text)
+            except TargetRefused as error:
+                self.refused(action, error)
+                raise
         self.pending_text = None
         state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
         # Record execution before observing. A stale post-action observation must not erase the action.
@@ -235,6 +243,23 @@ class Agent:
             if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
             else "ready"
         )
+        if state["status"] == "blocked":
+            state["blocked_reason"] = "No page change after 3 actions"
+
+    def refused(self, action, error):
+        state = self.state
+        target = action["node"] if type(action.get("node")) is int else action["label"]
+        refusals = state.setdefault("refusals", [])
+        refusals.append(
+            {"target": target, "action": action["label"], "kind": action["kind"], "error": str(error),
+             "after_step": len(state["history"])}
+        )
+        streak = refusals[-REFUSAL_LIMIT:]
+        if len(streak) == REFUSAL_LIMIT and all(
+            r["target"] == target and r["after_step"] == len(state["history"]) for r in streak
+        ):
+            state["status"] = "blocked"
+            state["blocked_reason"] = f"Target refused {REFUSAL_LIMIT} times: {action['label']}: {error}"
 
     def observe(self, previous):
         page = self.state["browser"].observe(screenshot=self.screenshots)
@@ -288,14 +313,14 @@ class Agent:
                 self.finish_trace("error", error)
                 raise
             if snapshot["status"] in {"done", "blocked"}:
-                self.finish_trace(snapshot["status"].upper())
+                self.finish_trace(snapshot["status"].upper(), reason=self.state.get("blocked_reason"))
             yield snapshot
 
-    def finish_trace(self, status, error=None):
+    def finish_trace(self, status, error=None, reason=None):
         started = self.state["started_at"]
         elapsed_ms = round((time.perf_counter() - started) * 1000) if started else 0
         self.trace.finish(
-            status, elapsed_ms, None if error is None else str(error), getattr(error, "raw", None)
+            status, elapsed_ms, None if error is None else str(error), getattr(error, "raw", None), reason
         )
 
     def close(self):
