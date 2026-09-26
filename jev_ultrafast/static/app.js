@@ -92,6 +92,7 @@ function render() {
     return;
   }
   $("empty").hidden = true;
+  $("viewport").style.aspectRatio = `${page.w}/${page.h}`;
   $("screenshot").hidden = false;
   $("screenshot").src = `data:image/jpeg;base64,${page.screenshot}`;
   $("url").textContent = page.url;

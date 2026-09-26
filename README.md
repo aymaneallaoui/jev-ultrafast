@@ -65,6 +65,8 @@ Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. T
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
 
+Each run drives its own `about:blank` target, opened as a background tab so your visible tab never switches. `JEV_OWN_WINDOW=1` opens that target in its own window instead; use it with a dedicated automation profile such as `jev-chrome`, where Chrome treats a background tab as hidden and throttles menu animations to ~2-3 s. The viewport is `JEV_VIEWPORT_WIDTH`×780 px, default 1480. Upstream used 1120, which the recorded evidence below reflects; Google Flights' two-month calendar is wider than 1120 px, so day buttons past that edge were dropped.
+
 `TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. The current demo uses `inception/mercury-2.5` with reasoning disabled. Gemini, GLM, and DeepSeek can also use the OpenAI-compatible text helper; configure the appropriate model, endpoint, and reasoning setting.
 
 ## Use the library

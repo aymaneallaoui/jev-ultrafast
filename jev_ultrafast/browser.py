@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -19,11 +20,20 @@ class StalePage(ValueError):
 
 class Browser:
     def __init__(self, url):
+        own_window = os.environ.get("JEV_OWN_WINDOW") == "1"
+        self.width, self.height = viewport_width(), 780
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        placement = {"newWindow": True, "background": False} if own_window else {"background": True}
+        self.target = cdp("Target.createTarget", url="about:blank", **placement)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
-        # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=self.width,
+            height=self.height,
+            deviceScaleFactor=1,
+            mobile=False,
+        )
+        # Keep rAF/menus rendering in the owned target, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.call("Page.navigate", url=url)
         deadline = time.monotonic() + 15
@@ -110,6 +120,17 @@ class Browser:
         if self.target:
             cdp("Target.closeTarget", targetId=self.target)
             self.target = None
+
+
+def viewport_width():
+    value = os.environ.get("JEV_VIEWPORT_WIDTH", "1480")
+    try:
+        width = int(value)
+    except ValueError:
+        width = 0
+    if width <= 0:
+        raise ValueError(f"JEV_VIEWPORT_WIDTH must be a positive integer, got {value!r}")
+    return width
 
 
 def fingerprint(state):

@@ -17,6 +17,9 @@ state = json.loads((source / "state.json").read_text())
 assert state["verification"]["passed"] and not state["recording_errors"]
 frames = [(0, Image.open(source / "frames/000000.jpg").convert("RGB"))]
 frames += sorted((int(p.stem), Image.open(p).convert("RGB")) for p in (source / "screencast").glob("*.jpg"))
+# Fit wider viewports into the 1120 px browser panel; 1120 px recordings are unchanged.
+scale = 1120 / frames[0][1].width
+frames = [(ts, im.resize((1120, round(im.height * scale))) if scale != 1 else im) for ts, im in frames]
 end = state["elapsed_ms"]
 folder = source / "video-frames"
 folder.mkdir(parents=True, exist_ok=False)
@@ -56,7 +59,7 @@ for i in range(round((end + 500) * 30 / 1000)):
         d.ellipse((54 + j * 19, 205, 63 + j * 19, 214), fill=c)
     d.text((145, 201), "google.com/travel/flights", font=mono(13), fill="#d4d6d5")
     # Omit Google account controls in every frame. No content from the task area is redrawn.
-    canvas.paste(screenshot.crop((0, 64, 1120, 780)), (36, 226))
+    canvas.paste(screenshot.crop((0, round(64 * scale), 1120, screenshot.height)), (36, 226))
     d.text((1192, 206), "JEV ULTRAFAST", font=font(16, True), fill=green)
     d.text((1189, 242), f"{t / 1000:05.2f}", font=mono(52), fill=ink)
     d.text((1193, 307), "SECONDS ELAPSED", font=font(13, True), fill=muted)
