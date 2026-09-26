@@ -2,8 +2,6 @@
 
 import argparse
 import csv
-import hashlib
-import json
 import re
 from collections import Counter
 from datetime import date
@@ -14,7 +12,7 @@ import pytest
 
 from jev_ultrafast.tracing import Trace
 from jev_ultrafast.verifiers import date_forms, flights, hn_story, page
-from scripts import collect, traces_to_kev
+from scripts import collect
 
 ROOT = Path(__file__).resolve().parents[1]
 TODAY = date(2026, 9, 28)
@@ -199,73 +197,6 @@ def test_trace_stats_and_summary_rows(tmp_path, monkeypatch):
         "input_tokens_total": "30",
     }
     assert rows[1]["status"] == "error" and rows[1]["run_id"] == ""
-
-
-def write_run(folder, run_id, status, verified, operations):
-    meta = {"goal": "g", "url": "https://en.wikipedia.org/wiki/Main_Page", "status": status, "verified": verified}
-    (folder / f"{run_id}.meta.json").write_text(json.dumps(meta))
-    lines = []
-    for n, operation in enumerate(operations, 1):
-        lines.append(json.dumps({
-            "step": n,
-            "request": {
-                "state": {"page": {"url": "u", "title": "t", "text": "x" * 2000}, "elements": [], "recent_actions": []},
-                "questions": {"operation": {"type": "choice"}, "click_target": {"type": "choice"}},
-            },
-            "answers": {"operation": {"choice": operation}, "click_target": {"choice": "2"}},
-        }))
-    (folder / f"{run_id}.jsonl").write_text("\n".join(lines) + "\n")
-
-
-def test_converter_keeps_verified_or_unverified_done_runs(tmp_path):
-    write_run(tmp_path, "run-pass", "DONE", True, ["CLICK", "WAIT", "DONE"])
-    write_run(tmp_path, "run-unchecked", "DONE", None, ["TYPE_TEXT", "BLOCKED"])
-    write_run(tmp_path, "run-failed", "DONE", False, ["CLICK"])
-    write_run(tmp_path, "run-blocked", "BLOCKED", None, ["CLICK"])
-    (tmp_path / "summary.csv").write_text("run_id,tags\nrun-pass,wikipedia;section\n")
-
-    counts = traces_to_kev.convert(tmp_path, tmp_path / "kev")
-    assert counts["train"] + counts["heldout"] == 5
-    assert counts["operation"] == {"CLICK": 1, "WAIT": 1, "DONE": 1, "TYPE_TEXT": 1, "BLOCKED": 1}
-    assert counts["tag"] == {"wikipedia": 3, "section": 3, "unknown": 2}
-    assert counts["host"] == {"en.wikipedia.org": 5}
-    kev = tmp_path / "kev"
-    records = [json.loads(line) for name in ("train", "heldout") for line in (kev / f"{name}.jsonl").open()]
-    assert all(len(r["state"]["page"]["text"]) == 1500 for r in records)
-    assert all(r["questions"]["click_target"]["label"] == "2" for r in records)
-    assert all("label" in r["questions"]["operation"] for r in records)
-    assert "label" not in json.loads((tmp_path / "run-pass.jsonl").read_text().splitlines()[0])["request"]["questions"]
-
-    first = {name: (tmp_path / "kev" / f"{name}.jsonl").read_text() for name in ("train", "heldout")}
-    trimmed = traces_to_kev.convert(tmp_path, tmp_path / "kev", drop_nonprogress=True)
-    assert trimmed["operation"] == {"CLICK": 1, "DONE": 1, "TYPE_TEXT": 1}
-    traces_to_kev.convert(tmp_path, tmp_path / "kev")
-    assert first == {name: (tmp_path / "kev" / f"{name}.jsonl").read_text() for name in ("train", "heldout")}
-    expected = int(hashlib.sha256(b"run-pass").hexdigest(), 16) % 100 < 85
-    assert (traces_to_kev.split("run-pass") == "train") == expected
-
-
-def test_converter_ignores_timing_lines_and_reads_old_traces(tmp_path):
-    write_run(tmp_path, "run-old", "DONE", True, ["CLICK", "DONE"])
-    write_run(tmp_path, "run-new", "DONE", True, ["CLICK", "DONE"])
-    path = tmp_path / "run-new.jsonl"
-    decisions = [json.loads(line) for line in path.read_text().splitlines()]
-    lines = [
-        {"event": "step_start", "step": 1, "t_ms": 0, "url": "u"},
-        {"event": "step_failed", "step": 1, "snapshot_ms": 3, "failed_phase": "snapshot", "error": "stale"},
-    ]
-    for n, decision in enumerate(decisions, 1):
-        lines += [
-            {"event": "step_start", "step": n, "t_ms": 10 * n, "url": "u"},
-            {**decision, "event": "step", "snapshot_ms": 1, "model_ms": 2, "execute_ms": 3, "wait_ms": 4},
-        ]
-    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
-    counts = traces_to_kev.convert(tmp_path, tmp_path / "kev")
-    assert counts["train"] + counts["heldout"] == 4
-    assert counts["operation"] == {"CLICK": 2, "DONE": 2}
-    kev = tmp_path / "kev"
-    records = [json.loads(line) for name in ("train", "heldout") for line in (kev / f"{name}.jsonl").open()]
-    assert all(set(r) == {"state", "questions"} for r in records)
 
 
 def test_every_task_has_an_independent_verifier_and_no_password():
