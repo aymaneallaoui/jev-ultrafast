@@ -745,3 +745,46 @@ def test_page_change_refusals_do_not_count_toward_the_target_streak(runner, monk
     for _ in range(4):
         runner.command("tick")
     assert runner.state["status"] == "ready" and "refusals" not in runner.state
+
+
+def test_blank_first_snapshot_of_a_new_page_is_reobserved(runner, fake_time):
+    runner.state["decision"] = decision("e3")
+    elsewhere = empty_page()
+    elsewhere["url"] = "https://other.test/article"
+    loaded = page()
+    loaded["url"] = elsewhere["url"]
+    runner.state["browser"].observe.side_effect = [elsewhere, elsewhere, loaded]
+    act(runner)
+    assert fake_time == [0.1, 0.1]
+    assert runner.state["page"] is loaded
+
+
+def test_filled_field_offers_press_enter_as_its_own_operation():
+    actions = page()["actions"] + [
+        {"id": "e4", "kind": "enter", "label": "Press Enter in Search", "role": "textbox", "value": "q", "node": 10},
+    ]
+    elements, targets, _ = model.action_space(actions)
+    assert targets["PRESS_ENTER"] == {"1": actions[-1]}
+    assert elements[0]["label"] == "Search" and "PRESS_ENTER" in elements[0]["operations"]
+
+
+@pytest.mark.parametrize(
+    ("content", "text"),
+    [
+        ('{"text": "Rust"}\n```', "Rust"),
+        ('```json\n{"text": "Rust"}\n```', "Rust"),
+        ('Sure: {"text": "a {b} c"} done', "a {b} c"),
+    ],
+)
+def test_text_helper_accepts_the_first_json_object_around_fences(monkeypatch, content, text):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", lambda *a, **k: {"choices": [{"message": {"content": content}}]})
+    assert model.field_text({"goal": "g"})[0] == text
+
+
+@pytest.mark.parametrize("content", ["no json here", '{"text": "x", "extra": 1}', '["text"]', None])
+def test_text_helper_still_rejects_invalid_values(monkeypatch, content):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", lambda *a, **k: {"choices": [{"message": {"content": content}}]})
+    with pytest.raises(model.InvalidModelResponse):
+        model.field_text({"goal": "g"})

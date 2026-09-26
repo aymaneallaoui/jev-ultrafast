@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import inspect
 import os
 import re
 import statistics
@@ -14,12 +15,12 @@ from pathlib import Path
 import yaml
 
 from jev_ultrafast import Agent
-from jev_ultrafast.verifiers import DAYS, MONTHS, flights
+from jev_ultrafast.verifiers import DAYS, MONTHS, flights, hn_story, page
 
 ROOT = Path(__file__).resolve().parents[1]
 TIMEOUT_S = 120
 PAUSE_S = 2
-VERIFIERS = {"flights": flights}
+VERIFIERS = {"flights": flights, "page": page, "hn_story": hn_story}
 SUMMARY_FIELDS = [
     "run_id", "task_id", "tags", "status", "steps", "elapsed_ms", "verified",
     "jev_latency_p50_ms", "jev_latency_max_ms", "input_tokens_total",
@@ -76,9 +77,10 @@ def duration(text):
 
 
 def run_task(task, batch_deadline=None):
-    agent = None
+    agent = initial = None
     try:
         agent = Agent(task["url"], task["goal"])
+        initial = agent.state["page"]
         deadline = time.monotonic() + TIMEOUT_S
         if batch_deadline is not None:
             deadline = min(deadline, batch_deadline)
@@ -92,7 +94,10 @@ def run_task(task, batch_deadline=None):
         if agent:
             if "verify" in task:
                 try:
-                    result = VERIFIERS[task["verify"]](agent.snapshot()["page"], **task["verify_args"])
+                    verifier, arguments = VERIFIERS[task["verify"]], dict(task["verify_args"])
+                    if "initial" in inspect.signature(verifier).parameters:
+                        arguments["initial"] = initial
+                    result = verifier(agent.snapshot()["page"], **arguments)
                     agent.trace.set_verified(result["passed"])
                 except Exception as error:
                     print(f"  {task['id']}: verification failed to run: {error}", file=sys.stderr)

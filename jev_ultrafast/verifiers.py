@@ -3,7 +3,7 @@
 import base64
 import re
 import unicodedata
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote_plus, urljoin, urlparse
 
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 MONTHS = (
@@ -64,3 +64,59 @@ def flights(page, *, origin, destination, day, one_way=True, return_day=None, ad
         counts = [re.search(r"(\d+) passengers?", a["label"]) for a in actions if a.get("role") == "button"]
         checks["passengers"] = adults in [int(match.group(1)) for match in counts if match]
     return {"passed": all(checks.values()), "checks": checks, "visible_flights": flight_labels}
+
+
+def page(page, *, url=(), text=(), fields=None):
+    """Generic checks: URL patterns (decoded, case-insensitive), visible text, and form field values."""
+    decoded, visible = unquote_plus(page["url"]), normalize(page["text"])
+    patterns = [url] if isinstance(url, str) else url
+    needles = [text] if isinstance(text, str) else text
+    checks = {f"url:{pattern}": bool(re.search(pattern, decoded, re.I)) for pattern in patterns}
+    checks.update({f"text:{needle}": normalize(needle) in visible for needle in needles})
+    for label, expected in (fields or {}).items():
+        checks[f"field:{label}"] = field_matches(page["actions"], label, expected)
+    return {"passed": all(checks.values()), "checks": checks}
+
+
+def field_matches(actions, label, expected):
+    """A field whose label matches holds the value; True/False compare a checkbox or radio's checked state."""
+    wanted = normalize(label).rstrip(":")
+    for action in actions:
+        if normalize(action.get("label", "").split(" → ")[0]).rstrip(":") != wanted:
+            continue
+        if isinstance(expected, bool):
+            if action.get("checked") in ("true", "false"):
+                return (action["checked"] == "true") is expected
+            continue
+        value = action.get("current_value", action.get("value", ""))
+        if normalize(value) == normalize(str(expected)):
+            return True
+    return False
+
+
+def hn_story(page, *, initial, rank, comments=False):
+    """The story at `rank` on the initial front page: its comment thread, or its own link."""
+    guards = initial.get("guards", {})
+    row = [
+        (action, guards[str(action["node"])])
+        for action in initial["actions"]
+        if action.get("kind") == "click" and guards.get(str(action.get("node")))
+        and (guards[str(action["node"])][13] or "").startswith(f"{rank}.\t")
+    ]
+    hrefs = [guard[12] or "" for _, guard in row]
+    story = next((h.split("id=")[1].split("&")[0] for h in hrefs if h.startswith("vote?id=")), None)
+    title = next((h for h in hrefs if not h.startswith(("vote?", "from?", "hide?"))), None)
+    base = initial["url"]
+    if comments:
+        expected = f"https://news.ycombinator.com/item?id={story}" if story else None
+    else:
+        expected = urljoin(base, title) if title else None
+    checks = {"story_found": expected is not None, "url": expected is not None and same_url(page["url"], expected)}
+    return {"passed": all(checks.values()), "checks": checks, "expected": expected}
+
+
+def same_url(actual, expected):
+    def key(value):
+        parsed = urlparse(value)
+        return (parsed.hostname or "").removeprefix("www."), parsed.path.rstrip("/"), parsed.query
+    return key(actual) == key(expected)

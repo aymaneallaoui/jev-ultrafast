@@ -93,7 +93,7 @@ const e = {
   getBoundingClientRect: () => ({x: scrolled ? 1153 : 1271, y: 300, width: 40, height: 40}),
   contains: n => n === e,
 };
-window.__jevFast = {nodes: new Map([[7, e]])};
+window.__jevFast = {nodes: new Map([[7, e]]), closest: () => null};
 globalThis.innerWidth = 1480; globalThis.innerHeight = 780;
 globalThis.document = {elementFromPoint: x => x < CLIP_EDGE ? e : null};
 console.log(JSON.stringify({result: EXPRESSION, options}));
@@ -109,3 +109,80 @@ def test_inner_scroller_clipped_target_is_clickable_only_once_revealed(monkeypat
     output = json.loads(subprocess.run(["node", str(script)], check=True, capture_output=True, text=True).stdout)
     assert output["options"] == {"block": "nearest", "inline": "nearest", "behavior": "instant"}
     assert output["result"] == expected
+
+
+def test_press_enter_focuses_the_observed_field_then_sends_one_enter(monkeypatch):
+    calls = []
+
+    def cdp(method, **params):
+        calls.append((method, params))
+        return {"result": {"value": {"x": 10, "y": 20}}} if method == "Runtime.evaluate" else {}
+
+    monkeypatch.setattr(browser, "cdp", cdp)
+    action = {"id": "e3", "kind": "enter", "node": 7}
+    browser.browser_operation({"operation": "act", "session": "s", "action": action})
+    assert "if (action.kind==='enter') e.focus();" in calls[0][1]["expression"]
+    keys = [(p["type"], p["key"]) for m, p in calls if m == "Input.dispatchKeyEvent"]
+    assert keys == [("keyDown", "Enter"), ("keyUp", "Enter")]
+    assert not any(m == "Input.dispatchMouseEvent" for m, _ in calls)
+
+
+def test_observe_waits_for_a_navigating_document_to_settle(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(browser.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(browser.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    reads = iter([browser.StalePage("Document is navigating")] * 30 + [{"url": "u"}])
+
+    def operation(request):
+        value = next(reads)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    b = browser.Browser.__new__(browser.Browser)
+    b.session, b.after_input = "s", None
+    assert b.observe(screenshot=False) == {"url": "u"}
+    assert clock[0] < browser.SETTLE_LIMIT_S
+
+
+def test_observe_gives_up_after_the_settle_limit(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(browser.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(browser.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+
+    def operation(request):
+        raise browser.StalePage("Document is navigating")
+
+    monkeypatch.setattr(browser, "browser_operation", operation)
+    b = browser.Browser.__new__(browser.Browser)
+    b.session, b.after_input = "s", None
+    with pytest.raises(browser.StalePage, match="navigating"):
+        b.observe(screenshot=False)
+    assert clock[0] >= browser.SETTLE_LIMIT_S
+
+
+SHADOW_DOM = """
+globalThis.window = globalThis;
+const root = {host: null};
+const inner = {parentNode: root};
+const e = {
+  isConnected: true, matches: () => false, checkVisibility: () => true, scrollIntoView() {},
+  getBoundingClientRect: () => ({x: 10, y: 10, width: 20, height: 20}),
+  shadowRoot: {elementFromPoint: () => inner}, parentNode: null,
+};
+root.host = e;
+window.__jevFast = {nodes: new Map([[7, e]]), closest: () => null};
+globalThis.innerWidth = 1480; globalThis.innerHeight = 780;
+globalThis.document = {elementFromPoint: () => e};
+console.log(JSON.stringify(EXPRESSION));
+"""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_hit_test_descends_into_open_shadow_roots(monkeypatch, tmp_path):
+    js = click_expression(monkeypatch)
+    script = tmp_path / "shadow.js"
+    script.write_text(SHADOW_DOM.replace("EXPRESSION", js))
+    output = subprocess.run(["node", str(script)], check=True, capture_output=True, text=True).stdout
+    assert json.loads(output) == {"x": 20, "y": 20}

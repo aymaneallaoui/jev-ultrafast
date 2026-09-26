@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from jev_ultrafast.tracing import Trace
-from jev_ultrafast.verifiers import date_forms, flights
+from jev_ultrafast.verifiers import date_forms, flights, hn_story, page
 from scripts import collect, traces_to_kev
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,8 +42,8 @@ def test_tasks_file_has_the_planned_distribution():
     }
     for task in tasks:
         assert "{" not in task["goal"] and "Stop when" in task["goal"]
-        assert ("verify" in task) == (task["tags"][0] == "google_flights")
-        if "verify" in task:
+        assert (task["verify"] == "flights") == (task["tags"][0] == "google_flights")
+        if task["verify"] == "flights":
             arguments = task["verify_args"]
             assert {"origin", "destination", "day", "one_way", "adults"} <= set(arguments)
             assert date_forms(arguments["day"])["goal"] in task["goal"]
@@ -152,6 +152,7 @@ def test_batch_deadline_stops_the_current_run_and_skips_the_rest(
     class FakeAgent:
         def __init__(self, url, goal):
             self.trace = Trace(url, goal)
+            self.state = {"page": {"url": url}}
 
         def run(self):
             taken = 0
@@ -265,3 +266,83 @@ def test_converter_ignores_timing_lines_and_reads_old_traces(tmp_path):
     kev = tmp_path / "kev"
     records = [json.loads(line) for name in ("train", "heldout") for line in (kev / f"{name}.jsonl").open()]
     assert all(set(r) == {"state", "questions"} for r in records)
+
+
+def test_every_task_has_an_independent_verifier_and_no_password():
+    tasks = collect.load_tasks(collect.ROOT / "tasks.yaml", date(2026, 9, 28))
+    assert all(t["verify"] in collect.VERIFIERS for t in tasks)
+    assert not any("password" in t["goal"].lower() for t in tasks)
+
+
+def observed(url, text="", actions=()):
+    return {"url": url, "text": text, "actions": list(actions)}
+
+
+def test_page_verifier_decodes_urls_and_checks_text_and_fields():
+    form = observed(
+        "https://httpbin.org/forms/post",
+        actions=[
+            {"label": "Customer name:", "value": "Ada Lovelace"},
+            {"label": "Medium", "value": "medium", "checked": "true"},
+            {"label": "Bacon", "value": "bacon", "checked": "false"},
+            {"label": "Dropdown (select) → Two", "kind": "select", "current_value": "Two", "value": "2"},
+        ],
+    )
+    fields = {"Customer name": "ada lovelace", "Medium": True, "Bacon": False, "Dropdown (select)": "Two"}
+    assert page(form, url=r"httpbin\.org/forms/post$", fields=fields)["passed"]
+    assert not page(form, fields={"Bacon": True})["passed"]
+    assert not page(form, fields={"Missing": "x"})["passed"]
+    ebay = observed("https://www.ebay.com/sch/i.html?_nkw=film%20camera&rt=nc&_udhi=100")
+    assert page(ebay, url=[r"_nkw=[^&]*film camera", r"[?&]_udhi=100(&|$)"])["passed"]
+    assert not page(ebay, url=r"[?&]_udhi=1000(&|$)")["passed"]
+    wiki = observed("https://en.wikipedia.org/wiki/G%C3%B6del%27s_incompleteness_theorems", "Gödel's theorems")
+    assert page(wiki, url=r"wiki/Gödel's_incompleteness_theorems(#|$)", text="godel's")["passed"]
+
+
+def front_page():
+    rows = [("1.\t\n\tFirst story (a.com)", ["vote?id=11&how=up&goto=news", "https://a.com/post/", "from?site=a.com"]),
+            ("2.\t\n\tAsk HN: Second", ["vote?id=22&how=up&goto=news", "item?id=22"])]
+    actions, guards, node = [], {}, 0
+    for scope, hrefs in rows:
+        for href in hrefs:
+            node += 1
+            actions.append({"kind": "click", "node": node, "label": href})
+            guards[str(node)] = [node] + [None] * 11 + [href, scope]
+    return {"url": "https://news.ycombinator.com/", "actions": actions, "guards": guards}
+
+
+def test_hn_verifier_follows_the_ranked_story_from_the_initial_front_page():
+    initial = front_page()
+    assert hn_story(observed("https://a.com/post"), initial=initial, rank=1)["passed"]
+    assert hn_story(observed("https://www.a.com/post/"), initial=initial, rank=1)["passed"]
+    assert not hn_story(observed("https://b.com/post"), initial=initial, rank=1)["passed"]
+    assert hn_story(observed("https://news.ycombinator.com/item?id=22"), initial=initial, rank=2)["passed"]
+    thread = "https://news.ycombinator.com/item?id="
+    assert hn_story(observed(thread + "11"), initial=initial, rank=1, comments=True)["passed"]
+    assert not hn_story(observed(thread + "22"), initial=initial, rank=1, comments=True)["passed"]
+    assert not hn_story(observed(thread + "33"), initial=initial, rank=3, comments=True)["passed"]
+
+
+def test_collector_passes_the_initial_page_to_verifiers_that_need_it(monkeypatch):
+    initial, final = front_page(), observed("https://news.ycombinator.com/item?id=11")
+
+    class FakeAgent:
+        def __init__(self, url, goal):
+            self.state = {"page": initial}
+            self.trace = SimpleNamespace(set_verified=lambda value: seen.append(value))
+
+        def run(self):
+            return iter(())
+
+        def snapshot(self):
+            return {"page": final}
+
+        def close(self):
+            pass
+
+    seen = []
+    monkeypatch.setattr(collect, "Agent", FakeAgent)
+    task = {"id": "hn", "url": initial["url"], "goal": "g", "verify": "hn_story",
+            "verify_args": {"rank": 1, "comments": True}}
+    collect.run_task(task)
+    assert seen == [True]

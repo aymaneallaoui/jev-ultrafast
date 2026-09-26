@@ -76,191 +76,305 @@
   url: https://en.wikipedia.org/wiki/Main_Page
   goal: "Find and open the Wikipedia article about Alan Turing. Stop when the Alan Turing article is visible."
   tags: [wikipedia, open_article]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Alan_Turing(#|$)}
 - id: wikipedia-open-godel
   url: https://en.wikipedia.org/wiki/Main_Page
   goal: "Find and open the Wikipedia article about Gödel's incompleteness theorems. Stop when that article is visible."
   tags: [wikipedia, open_article]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Gödel's_incompleteness_theorems(#|$)}
 - id: wikipedia-open-rhine
   url: https://en.wikipedia.org/wiki/Main_Page
   goal: "Find and open the Wikipedia article about the Rhine river. Stop when the Rhine article is visible."
   tags: [wikipedia, open_article]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Rhine(#|$)}
 - id: wikipedia-search-rosetta
   url: https://en.wikipedia.org/wiki/Main_Page
   goal: "Search Wikipedia for the Rosetta Stone and open its article. Stop when the Rosetta Stone article is visible."
   tags: [wikipedia, open_article]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Rosetta_Stone(#|$)}
 - id: wikipedia-section-python-history
   url: https://en.wikipedia.org/wiki/Python_(programming_language)
   goal: "Go to the History section of this article. Stop when the History section heading is visible."
   tags: [wikipedia, section]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Python_\(programming_language\)#History$, text: History}
 - id: wikipedia-section-linux-history
   url: https://en.wikipedia.org/wiki/Linux
   goal: "Go to the History section of this article. Stop when the History section heading is visible."
   tags: [wikipedia, section]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Linux#History$, text: History}
 - id: wikipedia-section-photosynthesis-seealso
   url: https://en.wikipedia.org/wiki/Photosynthesis
   goal: "Go to the See also section of this article. Stop when the See also section heading is visible."
   tags: [wikipedia, section]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Photosynthesis#See_also$, text: See also}
 - id: wikipedia-link-turing-bletchley
   url: https://en.wikipedia.org/wiki/Alan_Turing
   goal: "From this article, follow the link to the Bletchley Park article. Stop when the Bletchley Park article is visible."
   tags: [wikipedia, follow_link]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Bletchley_Park(#|$)}
 - id: wikipedia-link-python-guido
   url: https://en.wikipedia.org/wiki/Python_(programming_language)
   goal: "From this article, follow the link to the article about Guido van Rossum. Stop when the Guido van Rossum article is visible."
   tags: [wikipedia, follow_link]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Guido_van_Rossum(#|$)}
 - id: wikipedia-link-everest-himalayas
   url: https://en.wikipedia.org/wiki/Mount_Everest
   goal: "From this article, follow the link to the Himalayas article. Stop when the Himalayas article is visible."
   tags: [wikipedia, follow_link]
+  verify: page
+  verify_args: {url: en\.wikipedia\.org/wiki/Himalayas(#|$)}
 - id: hackernews-top-story
   url: https://news.ycombinator.com/
   goal: "Open the top story on the Hacker News front page. Stop when the story's own page is visible. Do not sign in, vote, or comment."
   tags: [hackernews, open_story]
+  verify: hn_story
+  verify_args: {rank: 1}
 - id: hackernews-comments-1
   url: https://news.ycombinator.com/
   goal: "Open the comments page for the first story on the Hacker News front page. Stop when that story's comment thread is visible. Do not sign in, vote, or comment."
   tags: [hackernews, comments]
+  verify: hn_story
+  verify_args: {rank: 1, comments: true}
 - id: hackernews-comments-3
   url: https://news.ycombinator.com/
   goal: "Open the comments page for the third story on the Hacker News front page. Stop when that story's comment thread is visible. Do not sign in, vote, or comment."
   tags: [hackernews, comments]
+  verify: hn_story
+  verify_args: {rank: 3, comments: true}
 - id: hackernews-comments-5
   url: https://news.ycombinator.com/
   goal: "Open the comments page for the fifth story on the Hacker News front page. Stop when that story's comment thread is visible. Do not sign in, vote, or comment."
   tags: [hackernews, comments]
+  verify: hn_story
+  verify_args: {rank: 5, comments: true}
 - id: hackernews-algolia-rust
   url: https://hn.algolia.com/
   goal: "Search Hacker News for stories about Rust. Stop when the search results are visible. Do not sign in, vote, or comment."
   tags: [hackernews, search]
+  verify: page
+  verify_args: {url: 'hn\.algolia\.com/.*[?&]query=rust(&|$)'}
 - id: hackernews-algolia-sqlite
   url: https://hn.algolia.com/
   goal: "Search Hacker News for stories about SQLite. Stop when the search results are visible. Do not sign in, vote, or comment."
   tags: [hackernews, search]
+  verify: page
+  verify_args: {url: 'hn\.algolia\.com/.*[?&]query=sqlite(&|$)'}
 - id: github-cpython-readme
   url: https://github.com/python/cpython
   goal: "Open the README.rst file in this repository. Stop when the README.rst contents are visible. Do not sign in."
   tags: [github, open_file]
+  verify: page
+  verify_args: {url: 'github\.com/python/cpython/blob/[^/]+/README\.rst$'}
 - id: github-flask-app
   url: https://github.com/pallets/flask
   goal: "Open the file src/flask/app.py in this repository. Stop when the contents of app.py are visible. Do not sign in."
   tags: [github, open_file]
+  verify: page
+  verify_args: {url: 'github\.com/pallets/flask/blob/[^/]+/src/flask/app\.py$'}
 - id: github-requests-api
   url: https://github.com/psf/requests
   goal: "Open the file src/requests/api.py in this repository. Stop when the contents of api.py are visible. Do not sign in."
   tags: [github, open_file]
+  verify: page
+  verify_args: {url: 'github\.com/psf/requests/blob/[^/]+/src/requests/api\.py$'}
 - id: github-linux-maintainers
   url: https://github.com/torvalds/linux
   goal: "Open the MAINTAINERS file in this repository. Stop when the MAINTAINERS file contents are visible. Do not sign in."
   tags: [github, open_file]
+  verify: page
+  verify_args: {url: 'github\.com/torvalds/linux/blob/[^/]+/MAINTAINERS$'}
 - id: github-cpython-issues
   url: https://github.com/python/cpython
   goal: "Open the Issues tab of this repository. Stop when the list of open issues is visible. Do not sign in."
   tags: [github, issues]
+  verify: page
+  verify_args: {url: 'github\.com/python/cpython/issues/?(\?|$)'}
 - id: github-rust-issues
   url: https://github.com/rust-lang/rust
   goal: "Open the Issues tab of this repository. Stop when the list of open issues is visible. Do not sign in."
   tags: [github, issues]
+  verify: page
+  verify_args: {url: 'github\.com/rust-lang/rust/issues/?(\?|$)'}
 - id: github-search-browser-automation
   url: https://github.com/
   goal: "Search GitHub repositories for browser automation. Stop when repository search results are visible. Do not sign in."
   tags: [github, search]
+  verify: page
+  verify_args:
+    url: ['github\.com/search\?', '[?&]q=browser automation(&|$)', '[?&]type=repositories(&|$)']
 - id: github-open-vscode
   url: https://github.com/
   goal: "Open the microsoft/vscode repository on GitHub. Stop when the repository's main page with its file list is visible. Do not sign in."
   tags: [github, open_repo]
+  verify: page
+  verify_args: {url: 'github\.com/microsoft/vscode/?$'}
 - id: mdn-fetch
   url: https://developer.mozilla.org/en-US/
   goal: "Search MDN for the Fetch API and open the reference page for the global fetch() function. Stop when the fetch() reference page is visible."
   tags: [mdn, reference]
+  verify: page
+  verify_args: {url: 'developer\.mozilla\.org/en-US/docs/Web/API/(Window/)?fetch$'}
 - id: mdn-array-map
   url: https://developer.mozilla.org/en-US/
   goal: "Search MDN for Array map and open the Array.prototype.map() reference page. Stop when that reference page is visible."
   tags: [mdn, reference]
+  verify: page
+  verify_args: {url: developer\.mozilla\.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map$}
 - id: mdn-intersection-observer
   url: https://developer.mozilla.org/en-US/
   goal: "Search MDN for IntersectionObserver and open its API reference page. Stop when the IntersectionObserver reference page is visible."
   tags: [mdn, reference]
+  verify: page
+  verify_args: {url: developer\.mozilla\.org/en-US/docs/Web/API/IntersectionObserver$}
 - id: mdn-grid-template-columns
   url: https://developer.mozilla.org/en-US/
   goal: "Search MDN for the CSS grid-template-columns property and open its reference page. Stop when that reference page is visible."
   tags: [mdn, reference]
+  verify: page
+  verify_args: {url: developer\.mozilla\.org/en-US/docs/Web/CSS/.*grid-template-columns$}
 - id: mdn-http-404
   url: https://developer.mozilla.org/en-US/
   goal: "Search MDN for the HTTP 404 status code and open its reference page. Stop when the 404 Not Found reference page is visible."
   tags: [mdn, reference]
+  verify: page
+  verify_args: {url: developer\.mozilla\.org/en-US/docs/Web/HTTP/.*Status/404$}
 - id: openstreetmap-eiffel-tower
   url: https://www.openstreetmap.org/
   goal: "Search the map for the Eiffel Tower in Paris. Stop when it appears in the search results and the map shows its location."
   tags: [openstreetmap, search]
+  verify: page
+  verify_args: {url: 'openstreetmap\.org/(search\?query=[^&]*eiffel|(node|way|relation)/\d+)', text: Eiffel Tower}
 - id: openstreetmap-brandenburg-gate
   url: https://www.openstreetmap.org/
   goal: "Search the map for the Brandenburg Gate in Berlin. Stop when it appears in the search results and the map shows its location."
   tags: [openstreetmap, search]
+  verify: page
+  verify_args: {url: 'openstreetmap\.org/(search\?query=[^&]*brandenburg|(node|way|relation)/\d+)', text: Brandenburg}
 - id: openstreetmap-golden-gate-bridge
   url: https://www.openstreetmap.org/
   goal: "Search the map for the Golden Gate Bridge in San Francisco. Stop when it appears in the search results and the map shows its location."
   tags: [openstreetmap, search]
+  verify: page
+  verify_args: {url: 'openstreetmap\.org/(search\?query=[^&]*golden gate|(node|way|relation)/\d+)', text: Golden Gate Bridge}
 - id: openstreetmap-sydney-opera-house
   url: https://www.openstreetmap.org/
   goal: "Search the map for the Sydney Opera House. Stop when it appears in the search results and the map shows its location."
   tags: [openstreetmap, search]
+  verify: page
+  verify_args: {url: 'openstreetmap\.org/(search\?query=[^&]*sydney opera|(node|way|relation)/\d+)', text: Sydney Opera House}
 - id: forms-httpbin-contact
   url: https://httpbin.org/forms/post
   goal: "Fill in the pizza order form with customer name Ada Lovelace, telephone 555-0100, and email ada@example.com. Stop when those values are visible in the form. Do not submit the form."
   tags: [forms, httpbin]
+  verify: page
+  verify_args:
+    url: httpbin\.org/forms/post$
+    fields: {Customer name: Ada Lovelace, Telephone: 555-0100, E-mail address: ada@example.com}
 - id: forms-httpbin-toppings
   url: https://httpbin.org/forms/post
   goal: "In the pizza order form, choose a medium pizza with bacon and onion toppings. Stop when those choices are visibly selected. Do not submit the form."
   tags: [forms, httpbin]
+  verify: page
+  verify_args:
+    url: httpbin\.org/forms/post$
+    fields: {Medium: true, Bacon: true, Onion: true}
 - id: forms-httpbin-instructions
   url: https://httpbin.org/forms/post
   goal: "Fill in the pizza order form for Grace Hopper with email grace@example.com, a large pizza, and the delivery instructions 'Leave at the front desk'. Stop when those values are visible in the form. Do not submit the form."
   tags: [forms, httpbin]
+  verify: page
+  verify_args:
+    url: httpbin\.org/forms/post$
+    fields: {Customer name: Grace Hopper, E-mail address: grace@example.com, Large: true, Delivery instructions: Leave at the front desk}
 - id: forms-httpbin-mushroom
   url: https://httpbin.org/forms/post
   goal: "Fill in the pizza order form for Alan Turing with telephone 555-0199 and a mushroom topping. Stop when those values are visible in the form. Do not submit the form."
   tags: [forms, httpbin]
+  verify: page
+  verify_args:
+    url: httpbin\.org/forms/post$
+    fields: {Customer name: Alan Turing, Telephone: 555-0199, Mushroom: true}
 - id: forms-selenium-select-two
   url: https://www.selenium.dev/selenium/web/web-form.html
-  goal: "Fill the web form with the text input 'Jev test', the password 'not-a-secret', and choose Two in the dropdown select. Stop when those values are visible in the form. Do not submit the form."
+  goal: "Fill the web form with the text input 'Jev test' and choose Two in the dropdown select. Stop when those values are visible in the form. Do not submit the form."
   tags: [forms, selenium]
+  verify: page
+  verify_args:
+    url: selenium\.dev/selenium/web/web-form\.html$
+    fields: {Text input: Jev test, Dropdown (select): Two}
 - id: forms-selenium-textarea-three
   url: https://www.selenium.dev/selenium/web/web-form.html
   goal: "In the web form, enter 'Hello from Jev' in the textarea and choose Three in the dropdown select. Stop when those values are visible in the form. Do not submit the form."
   tags: [forms, selenium]
+  verify: page
+  verify_args:
+    url: selenium\.dev/selenium/web/web-form\.html$
+    fields: {Textarea: Hello from Jev, Dropdown (select): Three}
 - id: youtube-lofi
   url: https://www.youtube.com/
   goal: "Search YouTube for lofi hip hop. Stop when the search results are visible. Do not play any video and do not sign in."
   tags: [youtube, search]
+  verify: page
+  verify_args: {url: 'youtube\.com/results\?search_query=lofi hip hop(&|$)'}
 - id: youtube-python-tutorial
   url: https://www.youtube.com/
   goal: "Search YouTube for python tutorial for beginners. Stop when the search results are visible. Do not play any video and do not sign in."
   tags: [youtube, search]
+  verify: page
+  verify_args: {url: 'youtube\.com/results\?search_query=python tutorial for beginners(&|$)'}
 - id: youtube-sourdough
   url: https://www.youtube.com/
   goal: "Search YouTube for how to make sourdough bread. Stop when the search results are visible. Do not play any video and do not sign in."
   tags: [youtube, search]
+  verify: page
+  verify_args: {url: 'youtube\.com/results\?search_query=[^&]*sourdough'}
 - id: youtube-artemis
   url: https://www.youtube.com/
   goal: "Search YouTube for NASA Artemis launch. Stop when the search results are visible. Do not play any video and do not sign in."
   tags: [youtube, search]
+  verify: page
+  verify_args: {url: 'youtube\.com/results\?search_query=nasa artemis launch(&|$)'}
 - id: ebay-keyboard-used
   url: https://www.ebay.com/
   goal: "Search eBay for a mechanical keyboard and filter the results to used condition. Stop when the filtered results are visible. Do not purchase, bid, or sign in."
   tags: [ebay, search_filter]
+  verify: page
+  verify_args:
+    url: ['ebay\.com/sch/i\.html\?.*_nkw=[^&]*mechanical keyboard', '[?&]LH_ItemCondition=3000(&|$)']
 - id: ebay-camera-under-100
   url: https://www.ebay.com/
   goal: "Search eBay for a vintage film camera and filter the results to a maximum price of 100 US dollars. Stop when the filtered results are visible. Do not purchase, bid, or sign in."
   tags: [ebay, search_filter]
+  verify: page
+  verify_args:
+    url: ['ebay\.com/sch/i\.html\?.*_nkw=[^&]*film camera', '[?&]_udhi=100(&|$)']
 - id: ebay-lego-new
   url: https://www.ebay.com/
   goal: "Search eBay for the Lego Millennium Falcon and filter the results to new condition. Stop when the filtered results are visible. Do not purchase, bid, or sign in."
   tags: [ebay, search_filter]
+  verify: page
+  verify_args:
+    url: ['ebay\.com/sch/i\.html\?.*_nkw=[^&]*lego millennium falcon', '[?&]LH_ItemCondition=1000(&|$)']
 - id: ebay-road-bike-under-500
   url: https://www.ebay.com/
   goal: "Search eBay for a road bike and filter the results to a maximum price of 500 US dollars. Stop when the filtered results are visible. Do not purchase, bid, or sign in."
   tags: [ebay, search_filter]
+  verify: page
+  verify_args:
+    url: ['ebay\.com/sch/i\.html\?.*_nkw=[^&]*road bike', '[?&]_udhi=500(&|$)']
 - id: ebay-headphones-new
   url: https://www.ebay.com/
   goal: "Search eBay for noise cancelling headphones and filter the results to new condition. Stop when the filtered results are visible. Do not purchase, bid, or sign in."
   tags: [ebay, search_filter]
+  verify: page
+  verify_args:
+    url: ['ebay\.com/sch/i\.html\?.*_nkw=[^&]*noise cancel', '[?&]LH_ItemCondition=1000(&|$)']

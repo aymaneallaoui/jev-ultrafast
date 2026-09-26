@@ -62,7 +62,7 @@ def validate_choice(answer, ids):
 def action_space(actions):
     """One index per observed element; each operation has its own valid target choices."""
     elements, indices, targets, controls = [], {}, {}, {}
-    operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT"}
+    operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT", "enter": "PRESS_ENTER"}
     for action in actions:
         kind = action["kind"]
         if kind not in operations:
@@ -98,6 +98,7 @@ def choose(state, goal, history, trace=None, retries=None):
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
         "TYPE_TEXT": "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
         "SELECT": "Select an observed dropdown value.",
+        "PRESS_ENTER": "Press Enter in a filled text field to submit it when no visible button submits it.",
     }
     operations = {key: labels[key] for key in targets}
     operations.update({key: value["label"] for key, value in controls.items()})
@@ -183,6 +184,17 @@ def field_context(goal, action, page, history):
     }
 
 
+def first_json_object(content):
+    """The first JSON object in a reply, ignoring code fences or trailing text around it."""
+    start = content.find("{")
+    if start < 0:
+        raise ValueError("No JSON object")
+    output, _ = json.JSONDecoder().raw_decode(content, start)
+    if not isinstance(output, dict):
+        raise ValueError("Not a JSON object")
+    return output
+
+
 def text_model():
     return os.environ.get("TEXT_MODEL", "deepseek-chat")
 
@@ -218,11 +230,11 @@ def field_text(context):
     content = None
     try:
         content = result["choices"][0]["message"]["content"]
-        output = json.loads(content)
+        output = first_json_object(content)
         value = output["text"]
         if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
             raise ValueError()
-    except (ValueError, KeyError, TypeError, IndexError):
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError):
         raw = content if isinstance(content, str) else json.dumps(result, default=str)
         raise InvalidModelResponse(
             f"Text helper returned no valid field value; nothing typed. Model returned: {raw[:300]!r}"

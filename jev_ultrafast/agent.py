@@ -264,7 +264,7 @@ class Agent:
     def observe(self, previous):
         page = self.state["browser"].observe(screenshot=self.screenshots)
         for _ in range(EMPTY_RETRIES):
-            if page["url"] != previous["url"] or elements(page) or page["text"].strip() or not elements(previous):
+            if elements(page) or page["text"].strip() or (page["url"] == previous["url"] and not elements(previous)):
                 break
             sleep(EMPTY_RETRY_MS / 1000)
             page = self.state["browser"].observe(screenshot=self.screenshots)

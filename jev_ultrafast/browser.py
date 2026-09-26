@@ -13,6 +13,8 @@ from browser_harness.helpers import cdp
 # Atomically read visible content and controls, preserving actual DOM node identity.
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
+SETTLE_LIMIT_S = 5
+SETTLE_POLL_S = 0.05
 
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
@@ -72,7 +74,8 @@ class Browser:
                         if (stopped) return;
                         const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'')
                           .split(/\\s+/).filter(Boolean);
-                        const roots=ids.length ? ids.map(id=>document.getElementById(id)).filter(Boolean) : [document];
+                        const scope=field?.getRootNode() || document;
+                        const roots=ids.length ? ids.map(id=>scope.getElementById(id)).filter(Boolean) : [scope];
                         const options=roots.flatMap(root=>[...root.querySelectorAll('[role="option"]')]);
                         if (++frames>=2 && (!autocomplete || options.some(e=>{
                           const r=e.getBoundingClientRect();
@@ -88,19 +91,19 @@ class Browser:
                 )
             except RuntimeError:
                 pass
-        for attempt in range(10):
+        deadline = time.monotonic() + SETTLE_LIMIT_S
+        while True:
             try:
                 return browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot}
                 )
             except StalePage:
-                if attempt == 9:
+                if time.monotonic() >= deadline:
                     raise
-                time.sleep(0.02)
-        raise StalePage("Page did not settle")
+                time.sleep(SETTLE_POLL_S)
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select"}:
+        if action is not None and action["kind"] in {"click", "select", "enter"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -169,13 +172,22 @@ def browser_operation(request):
             # scrollIntoView only reveals a target clipped by an inner scroller; the hit-test still decides.
             target = evaluate("""(action => {
               const e=window.__jevFast?.nodes.get(action.node);
-              if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
+              if (!e?.isConnected || e.matches(':disabled') ||
+                  window.__jevFast.closest(e,'[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
               e.scrollIntoView({block:'nearest',inline:'nearest',behavior:'instant'});
               const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
               if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              if (!e.contains(document.elementFromPoint(x,y))) return null;
+              let hit=document.elementFromPoint(x,y);
+              while (hit?.shadowRoot) {
+                const inner=hit.shadowRoot.elementFromPoint(x,y);
+                if (!inner || inner===hit) break;
+                hit=inner;
+              }
+              let within=false;
+              for (let n=hit; n && !within; n=n.parentNode || n.host) within=n===e;
+              if (!within) return null;
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
                     !o.disabled && !o.closest('optgroup[disabled]'))) return null;
@@ -183,13 +195,24 @@ def browser_operation(request):
                 e.dispatchEvent(new Event('input',{bubbles:true}));
                 e.dispatchEvent(new Event('change',{bubbles:true}));
               }
+              if (action.kind==='enter') e.focus();
               return {x,y};
             })(""" + json.dumps(action) + ")")
             if target is None:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
                 raise TargetRefused("Target changed or is covered. Observe again.")
-            if kind != "select":
+            if kind == "enter":
+                for event in ("keyDown", "keyUp"):
+                    call(
+                        "Input.dispatchKeyEvent",
+                        type=event,
+                        key="Enter",
+                        code="Enter",
+                        windowsVirtualKeyCode=13,
+                        **({"text": "\r"} if event == "keyDown" else {}),
+                    )
+            elif kind != "select":
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):
                     call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
