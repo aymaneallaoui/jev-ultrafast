@@ -148,6 +148,10 @@ Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-
 
 Two optional decision guards, off unless their variables are set: `JEV_LOOP_GUARD=1` swaps a choice for the runner-up target of the same head when the agent loops (the same action twice without a page change, an A,B,A,B cycle over four decisions, or a target refused twice); `JEV_DONE_MIN_CONF` / `JEV_BLOCKED_MIN_CONF` turn a `DONE` / `BLOCKED` whose probability is below the threshold into the next most likely operation, using that operation's own validated target, but only when that operation's probability is above 0.15 (otherwise the `DONE` / `BLOCKED` stands). Trace lines record both as `loop_guard` and `confidence_gate`, and a gated step also carries `done_gated` or `blocked_gated`.
 
+### Cascade
+
+With `JEV_VERIFIER_BASE_URL` set, a second server speaking the same `/v1/systemone` API (larger model) re-answers the identical request whenever the primary chooses `DONE`, chooses `BLOCKED`, or picks a target whose probability is below `JEV_CASCADE_TARGET_CONF` (default 0.5). The verifier's answer is used when valid; if its call fails or is invalid, the primary's decision stands. `JEV_VERIFIER_API_KEY` defaults to `TYPESAFE_API_KEY`. With the variable unset nothing changes. The decision and the trace step carry a `cascade` object (`reason`, `used`, `primary`, `verifier`); the step's `answers` are those of the response that was used and `latency_ms` covers both calls. `scripts/serve_cascade.sh [primary-mode] [verifier-mode]` (defaults `08b-d1a`, `4b-nf4`) serves both locally on ports 8009 and 8010 and prints the two variables to export.
+
 `traces_to_kev.py --source DIR` merges further trace directories (for example `raw` with Jev labels and `raw-4b` with Kev-4B labels), each keeping its own `summary.csv` tags; `--exclude` is repeatable, and steps where a guard replaced the model's choice are skipped because their label is not what executed.
 
 ## Comparing decision models

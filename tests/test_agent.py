@@ -913,3 +913,120 @@ def test_gate_marks_a_gated_blocked(runner, monkeypatch):
     decision = gate_decision("BLOCKED", {"BLOCKED": 0.6, "CLICK": 0.4})
     runner.confidence_gate(decision)
     assert decision["operation"] == "CLICK" and decision["blocked_gated"] is True and "done_gated" not in decision
+
+
+def cascade_response(body, operation, target_probability=1.0, model_name="test"):
+    answers = {"operation": choice(body["questions"]["operation"]["criteria"], operation)}
+    if operation == "CLICK":
+        rest = (1 - target_probability) / 2
+        answers["click_target"] = {
+            "choice": "1",
+            "confidence": target_probability,
+            "probabilities": {"1": target_probability, "2": rest, "3": rest},
+        }
+    return {"model": model_name, "answers": answers, "usage": {"input_tokens": 5}}
+
+
+def cascade_page():
+    state = page()
+    state["actions"].append({"id": "e4", "kind": "click", "label": "More", "role": "button", "value": "", "node": 30})
+    return state
+
+
+def cascade_setup(monkeypatch, primary, verifier):
+    calls = []
+
+    def post(url, key, body):
+        calls.append((url, key, body))
+        reply = primary if url.startswith("http://primary") else verifier
+        if isinstance(reply, Exception):
+            raise reply
+        return reply(body) if callable(reply) else reply
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setenv("TYPESAFE_BASE_URL", "http://primary")
+    monkeypatch.setattr(model, "post_json", post)
+    return calls
+
+
+def test_cascade_is_off_without_verifier_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    calls = cascade_setup(monkeypatch, lambda body: cascade_response(body, "DONE"), None)
+    trace = Trace("https://example.test/", "Find a book")
+    d = model.choose(cascade_page(), "Find a book", [], trace)
+    trace.flush()
+    assert len(calls) == 1 and "cascade" not in d
+    assert "cascade" not in json.loads((tmp_path / f"{trace.run_id}.jsonl").read_text().splitlines()[0])
+
+
+def test_cascade_done_escalates_to_verifier(monkeypatch, tmp_path):
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    monkeypatch.setenv("JEV_VERIFIER_BASE_URL", "http://verifier/")
+    monkeypatch.setenv("JEV_VERIFIER_API_KEY", "vkey")
+    calls = cascade_setup(
+        monkeypatch,
+        lambda body: cascade_response(body, "DONE", model_name="small"),
+        lambda body: cascade_response(body, "CLICK", model_name="large"),
+    )
+    trace = Trace("https://example.test/", "Find a book")
+    d = model.choose(cascade_page(), "Find a book", [], trace)
+    trace.flush()
+    assert len(calls) == 2
+    assert calls[1][0] == "http://verifier/v1/systemone" and calls[1][1] == "vkey" and calls[1][2] == calls[0][2]
+    assert d["operation"] == "CLICK" and d["model"] == "large"
+    assert d["cascade"]["reason"] == "done" and d["cascade"]["used"] == "verifier"
+    assert d["cascade"]["primary"]["answers"]["operation"]["choice"] == "DONE"
+    assert d["cascade"]["verifier"]["answers"] == d["raw_answers"]
+    step = json.loads((tmp_path / f"{trace.run_id}.jsonl").read_text().splitlines()[0])
+    assert step["answers"] == d["raw_answers"] and step["cascade"] == d["cascade"]
+
+
+def test_cascade_blocked_escalates(monkeypatch):
+    monkeypatch.setenv("JEV_VERIFIER_BASE_URL", "http://verifier")
+    calls = cascade_setup(
+        monkeypatch, lambda body: cascade_response(body, "BLOCKED"), lambda body: cascade_response(body, "CLICK")
+    )
+    d = model.choose(cascade_page(), "Find a book", [])
+    assert len(calls) == 2 and d["cascade"]["reason"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    ("probability", "threshold", "escalates"), [(0.4, None, True), (0.6, None, False), (0.6, "0.7", True)]
+)
+def test_cascade_target_confidence(monkeypatch, probability, threshold, escalates):
+    monkeypatch.setenv("JEV_VERIFIER_BASE_URL", "http://verifier")
+    if threshold:
+        monkeypatch.setenv("JEV_CASCADE_TARGET_CONF", threshold)
+    calls = cascade_setup(
+        monkeypatch,
+        lambda body: cascade_response(body, "CLICK", probability),
+        lambda body: cascade_response(body, "CLICK", 0.9),
+    )
+    d = model.choose(cascade_page(), "Find a book", [])
+    assert (len(calls) == 2) is escalates
+    assert ("cascade" in d) is escalates
+    if escalates:
+        assert d["cascade"]["reason"] == "target_conf"
+
+
+@pytest.mark.parametrize("failure", ["connection", "invalid"])
+def test_cascade_falls_back_to_primary_when_verifier_fails(monkeypatch, tmp_path, failure):
+    monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    monkeypatch.setenv("JEV_VERIFIER_BASE_URL", "http://verifier")
+
+    def bad(body):
+        reply = cascade_response(body, "CLICK", 0.9)
+        reply["answers"]["operation"]["probabilities"]["CLICK"] = 0.2
+        return reply
+
+    verifier = model.ModelConnectionError("Model connection failed; no action executed.")
+    calls = cascade_setup(
+        monkeypatch, lambda body: cascade_response(body, "DONE"), verifier if failure == "connection" else bad
+    )
+    trace = Trace("https://example.test/", "Find a book")
+    d = model.choose(cascade_page(), "Find a book", [], trace)
+    trace.flush()
+    assert len(calls) == 2 and d["operation"] == "DONE"
+    assert d["cascade"]["used"] == "primary" and d["cascade"]["verifier"]["error"]
+    step = json.loads((tmp_path / f"{trace.run_id}.jsonl").read_text().splitlines()[0])
+    assert step["answers"]["operation"]["choice"] == "DONE"

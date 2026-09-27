@@ -130,10 +130,72 @@ def choose(state, goal, history, trace=None, retries=None):
         },
         "questions": questions,
     }
-    base = os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai").rstrip("/")
+    def ask(base, key):
+        started = time.perf_counter()
+        result = post_json(base.rstrip("/") + "/v1/systemone", key, body)
+        request_ms = round((time.perf_counter() - started) * 1000)
+        return result, interpret(result, operations, targets, controls), request_ms
+
     started = time.perf_counter()
-    result = post_json(base + "/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
-    request_ms = round((time.perf_counter() - started) * 1000)
+    result, fields, request_ms = ask(
+        os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai"), os.environ["TYPESAFE_API_KEY"]
+    )
+    cascade = None
+    verifier_base = os.environ.get("JEV_VERIFIER_BASE_URL")
+    reason = escalation_reason(fields) if verifier_base else None
+    if reason:
+        primary = {"answers": result["answers"], "model": result["model"], "latency_ms": request_ms}
+        try:
+            verified, verified_fields, verifier_ms = ask(
+                verifier_base, os.environ.get("JEV_VERIFIER_API_KEY") or os.environ["TYPESAFE_API_KEY"]
+            )
+        except (TransientModelError, RuntimeError) as error:
+            elapsed = round((time.perf_counter() - started) * 1000) - request_ms
+            cascade = {"reason": reason, "used": "primary", "primary": primary}
+            cascade["verifier"] = {"error": str(error), "latency_ms": elapsed}
+        else:
+            result, fields = verified, verified_fields
+            cascade = {"reason": reason, "used": "verifier", "primary": primary}
+            cascade["verifier"] = {"answers": result["answers"], "model": result["model"], "latency_ms": verifier_ms}
+    latency_ms = round((time.perf_counter() - started) * 1000)
+    operation = fields["operation"]
+    if trace:
+        extra = {"cascade": cascade} if cascade else {}
+        trace.step(
+            goal,
+            body,
+            result,
+            latency_ms if cascade else request_ms,
+            awaiting_text=operation == "TYPE_TEXT",
+            retries=retries,
+            **extra,
+        )
+    decision = {
+        **fields,
+        "raw_answers": result["answers"],
+        "model": result["model"],
+        "usage": result.get("usage", {}),
+        "latency_ms": latency_ms,
+        "request": body,
+    }
+    if cascade:
+        decision["cascade"] = cascade
+    return decision
+
+
+def escalation_reason(fields):
+    if fields["operation"] == "DONE":
+        return "done"
+    if fields["operation"] == "BLOCKED":
+        return "blocked"
+    threshold = float(os.environ.get("JEV_CASCADE_TARGET_CONF", "0.5"))
+    if fields["target"] is not None and fields["target_probabilities"][fields["target"]] < threshold:
+        return "target_conf"
+    return None
+
+
+def interpret(result, operations, targets, controls):
+    """Validate one /v1/systemone response and read the chosen operation and target from it."""
 
     def validated(answer, ids):
         try:
@@ -156,8 +218,6 @@ def choose(state, goal, history, trace=None, retries=None):
     else:
         choice = controls[operation]["id"] if operation in controls else operation
         probabilities[choice] = operation_answer["probabilities"][operation]
-    if trace:
-        trace.step(goal, body, result, request_ms, awaiting_text=operation == "TYPE_TEXT", retries=retries)
     return {
         "choice": choice,
         "operation": operation,
@@ -168,11 +228,6 @@ def choose(state, goal, history, trace=None, retries=None):
         "operation_probabilities": operation_answer["probabilities"],
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_answer["confidence"] if target_answer else None,
-        "raw_answers": result["answers"],
-        "model": result["model"],
-        "usage": result.get("usage", {}),
-        "latency_ms": round((time.perf_counter() - started) * 1000),
-        "request": body,
     }
 
 

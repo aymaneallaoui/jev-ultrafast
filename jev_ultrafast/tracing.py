@@ -57,7 +57,7 @@ class Trace:
         elif error is not None:
             self.write({"event": "step_failed", "step": self.steps + 1, **fields})
 
-    def step(self, goal, request, result, latency_ms, *, awaiting_text=False, retries=None):
+    def step(self, goal, request, result, latency_ms, *, awaiting_text=False, retries=None, cascade=None):
         self.flush()
         self.steps += 1
         self.latencies.append(latency_ms)
@@ -74,6 +74,8 @@ class Trace:
         }
         if retries:
             self.pending["retries"] = retries
+        if cascade:
+            self.pending["cascade"] = cascade
         if not awaiting_text and self.timing is None:
             self.flush()
 

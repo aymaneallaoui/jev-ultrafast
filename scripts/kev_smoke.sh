@@ -8,6 +8,10 @@ MODEL=${1:-08b}
 PORT=${2:-8009}
 TAG=jev-$MODEL
 curl -sf "http://127.0.0.1:$PORT/v1/models" > /dev/null || { echo "no kev.serve on port $PORT; run scripts/serve_local.sh $MODEL $PORT" >&2; exit 1; }
+if [ -n "${JEV_VERIFIER_BASE_URL:-}" ]; then
+  curl -sf "$JEV_VERIFIER_BASE_URL/v1/models" > /dev/null || { echo "no verifier at $JEV_VERIFIER_BASE_URL" >&2; exit 1; }
+  export JEV_VERIFIER_API_KEY=${JEV_VERIFIER_API_KEY:-local}
+fi
 curl -sf http://127.0.0.1:9222/json/version > /dev/null || { echo "jev-chrome is not running on port 9222" >&2; exit 1; }
 export TYPESAFE_BASE_URL="http://127.0.0.1:$PORT" TYPESAFE_API_KEY=local TYPESAFE_MODEL="$TAG"
 export BU_CDP_URL=http://127.0.0.1:9222 TRACE_DIR="$HOME/jev-traces/kev-smoke-$TAG${TRACE_SUFFIX:-}"
