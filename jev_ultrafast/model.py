@@ -1,5 +1,6 @@
 """TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
 
+import hashlib
 import json
 import math
 import os
@@ -133,7 +134,7 @@ def action_space(actions):
     return elements, targets, controls
 
 
-def choose(state, goal, history, trace=None, retries=None):
+def choose(state, goal, history, trace=None, retries=None, veto_cache=None):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -184,21 +185,37 @@ def choose(state, goal, history, trace=None, retries=None):
     cascade = None
     verifier_base = os.environ.get("JEV_VERIFIER_BASE_URL")
     reason = escalation_reason(fields) if verifier_base else None
+    latency_ms = None
     if reason:
         primary = {"answers": result["answers"], "model": result["model"], "latency_ms": request_ms}
-        try:
-            verified, verified_fields, verifier_ms = ask(
-                verifier_base, os.environ.get("JEV_VERIFIER_API_KEY") or os.environ["TYPESAFE_API_KEY"]
-            )
-        except (TransientModelError, RuntimeError) as error:
-            elapsed = round((time.perf_counter() - started) * 1000) - request_ms
-            cascade = {"reason": reason, "used": "primary", "primary": primary}
-            cascade["verifier"] = {"error": str(error), "latency_ms": elapsed}
+        primary_operation = fields["operation"]
+        key = None
+        if veto_cache is not None and reason in ("done", "blocked") and os.environ.get("JEV_VETO_CACHE") != "0":
+            key = veto_key(body)
+        cached = cached_verdict(veto_cache, key, operations, targets, controls)
+        if cached:
+            entry, fields = cached
+            result, latency_ms = entry["result"], request_ms
+            cache = {"answers": result["answers"], "model": result["model"], "from_step": entry["step"]}
+            cascade = {"reason": reason, "used": "cache", "primary": primary, "cache": cache}
         else:
-            result, fields = verified, verified_fields
-            cascade = {"reason": reason, "used": "verifier", "primary": primary}
-            cascade["verifier"] = {"answers": result["answers"], "model": result["model"], "latency_ms": verifier_ms}
-    latency_ms = round((time.perf_counter() - started) * 1000)
+            try:
+                verified, verified_fields, verifier_ms = ask(
+                    verifier_base, os.environ.get("JEV_VERIFIER_API_KEY") or os.environ["TYPESAFE_API_KEY"]
+                )
+            except (TransientModelError, RuntimeError) as error:
+                elapsed = round((time.perf_counter() - started) * 1000) - request_ms
+                cascade = {"reason": reason, "used": "primary", "primary": primary}
+                cascade["verifier"] = {"error": str(error), "latency_ms": elapsed}
+            else:
+                if key and verified_fields["operation"] != primary_operation:
+                    veto_cache[key] = {"result": verified, "step": trace.steps + 1 if trace else len(veto_cache) + 1}
+                result, fields = verified, verified_fields
+                cascade = {"reason": reason, "used": "verifier", "primary": primary}
+                verifier = {"answers": result["answers"], "model": result["model"], "latency_ms": verifier_ms}
+                cascade["verifier"] = verifier
+    if latency_ms is None:
+        latency_ms = round((time.perf_counter() - started) * 1000)
     operation = fields["operation"]
     if trace:
         extra = {"cascade": cascade} if cascade else {}
@@ -222,6 +239,23 @@ def choose(state, goal, history, trace=None, retries=None):
     if cascade:
         decision["cascade"] = cascade
     return decision
+
+
+def veto_key(body):
+    labels = "\n".join(element["label"] for element in body["state"]["elements"])
+    return body["state"]["page"]["url"], hashlib.sha256(labels.encode()).hexdigest()
+
+
+def cached_verdict(veto_cache, key, operations, targets, controls):
+    """Return the stored verifier entry and its fields re-validated against this page, or drop a stale entry."""
+    entry = veto_cache.get(key) if key else None
+    if not entry:
+        return None
+    try:
+        return entry, interpret(entry["result"], operations, targets, controls)
+    except InvalidModelResponse:
+        del veto_cache[key]
+        return None
 
 
 def escalation_reason(fields):

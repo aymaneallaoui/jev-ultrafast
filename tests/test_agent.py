@@ -1033,6 +1033,120 @@ def test_cascade_falls_back_to_primary_when_verifier_fails(monkeypatch, tmp_path
     assert step["answers"]["operation"]["choice"] == "DONE"
 
 
+def veto_run(monkeypatch, primary="DONE", verifier="CLICK", cache=None, tmp_path=None):
+    monkeypatch.setenv("JEV_VERIFIER_BASE_URL", "http://verifier")
+    if tmp_path:
+        monkeypatch.setenv("TRACE_DIR", str(tmp_path))
+    calls = cascade_setup(
+        monkeypatch, lambda body: cascade_response(body, primary), lambda body: cascade_response(body, verifier)
+    )
+    cache = {} if cache is None else cache
+    return calls, cache
+
+
+def test_veto_cache_skips_the_verifier_on_a_repeated_done(monkeypatch, tmp_path):
+    calls, cache = veto_run(monkeypatch, tmp_path=tmp_path)
+    trace = Trace("https://example.test/", "Find a book")
+    first = model.choose(cascade_page(), "Find a book", [], trace, veto_cache=cache)
+    assert len(calls) == 2 and len(cache) == 1
+    stored = next(iter(cache.values()))
+    assert stored["result"]["answers"] == first["raw_answers"]
+    second = model.choose(cascade_page(), "Find a book", [], trace, veto_cache=cache)
+    trace.flush()
+    assert len(calls) == 3 and calls[2][0].startswith("http://primary")
+    assert second["operation"] == "CLICK" and second["cascade"]["used"] == "cache"
+    assert second["cascade"]["cache"]["from_step"] == stored["step"] == 1
+    assert second["cascade"]["cache"]["answers"] == stored["result"]["answers"] == second["raw_answers"]
+    assert "verifier" not in second["cascade"]
+    lines = [json.loads(line) for line in (tmp_path / f"{trace.run_id}.jsonl").read_text().splitlines()]
+    step = next(line for line in lines if line.get("step") == 2 and "answers" in line)
+    assert step["answers"] == stored["result"]["answers"]
+    assert step["latency_ms"] == second["cascade"]["primary"]["latency_ms"] == second["latency_ms"]
+
+
+def test_veto_cache_ignores_a_verifier_that_agrees(monkeypatch):
+    calls, cache = veto_run(monkeypatch, verifier="DONE")
+    model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    assert len(calls) == 4 and not cache
+
+
+def test_veto_cache_does_not_store_target_confidence_overrides(monkeypatch):
+    monkeypatch.setenv("JEV_VERIFIER_BASE_URL", "http://verifier")
+    calls = cascade_setup(
+        monkeypatch, lambda body: cascade_response(body, "CLICK", 0.4), lambda body: cascade_response(body, "DONE")
+    )
+    cache = {}
+    d = model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    assert d["cascade"]["reason"] == "target_conf" and d["operation"] == "DONE"
+    assert len(calls) == 2 and not cache
+
+
+def test_veto_cache_key_depends_on_url_and_labels(monkeypatch):
+    calls, cache = veto_run(monkeypatch)
+    model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    other_url = cascade_page()
+    other_url["url"] = "https://example.test/next"
+    other_label = cascade_page()
+    other_label["actions"][2]["label"] = "Proceed"
+    for changed in (other_url, other_label):
+        d = model.choose(changed, "Find a book", [], veto_cache=cache)
+        assert d["cascade"]["used"] == "verifier"
+    assert len(calls) == 6 and len(cache) == 3
+
+
+def test_veto_key_is_stable_and_label_sensitive():
+    def body(labels, url="https://example.test/"):
+        return {"state": {"page": {"url": url}, "elements": [{"label": label} for label in labels]}}
+
+    assert model.veto_key(body(["a", "b"])) == model.veto_key(body(["a", "b"]))
+    assert model.veto_key(body(["a", "b"])) != model.veto_key(body(["a", "c"]))
+    assert model.veto_key(body(["a", "b"])) != model.veto_key(body(["a", "b"], "https://example.test/x"))
+
+
+def test_veto_cache_drops_an_entry_that_no_longer_validates(monkeypatch):
+    calls, cache = veto_run(monkeypatch)
+    model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    key = next(iter(cache))
+    cache[key]["result"]["answers"]["click_target"]["choice"] = "99"
+    d = model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    assert len(calls) == 4 and d["cascade"]["used"] == "verifier"
+    assert cache[key]["result"]["answers"]["click_target"]["choice"] == "1"
+
+
+def test_veto_cache_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("JEV_VETO_CACHE", "0")
+    calls, cache = veto_run(monkeypatch)
+    model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    assert len(calls) == 4 and not cache
+
+
+def test_veto_cache_is_inert_without_a_cache_or_verifier(monkeypatch):
+    calls, cache = veto_run(monkeypatch)
+    d = model.choose(cascade_page(), "Find a book", [])
+    assert len(calls) == 2 and d["cascade"]["used"] == "verifier" and not cache
+    monkeypatch.delenv("JEV_VERIFIER_BASE_URL")
+    d = model.choose(cascade_page(), "Find a book", [], veto_cache=cache)
+    assert "cascade" not in d and not cache
+
+
+@pytest.mark.parametrize("page_changed", [True, False])
+def test_veto_cache_entry_is_cleared_only_when_the_page_changed(runner, page_changed):
+    p = runner.state["page"]
+    request = {"state": {"page": {"url": p["url"]}, "elements": [{"label": "Go"}]}}
+    key = model.veto_key(request)
+    runner.state["veto_cache"] = {key: {"result": {}, "step": 1}, ("other", "key"): {}}
+    runner.state["decision"] = {**decision("e3"), "operation": "CLICK", "request": request}
+    after = deepcopy(p)
+    if page_changed:
+        after["fingerprint"] = "changed"
+    runner.state["browser"].observe.return_value = after
+    runner.command("act", {"fingerprint": p["fingerprint"]})
+    assert (key in runner.state["veto_cache"]) is not page_changed
+    assert ("other", "key") in runner.state["veto_cache"]
+
+
 TEXT_REPLY = {"choices": [{"message": {"content": '{"text":"Zurich"}'}}], "usage": {"input_tokens": 3}}
 
 

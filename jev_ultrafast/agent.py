@@ -15,6 +15,7 @@ from .model import (
     field_text,
     text_model,
     validate_choice,
+    veto_key,
 )
 from .questions import MAX_STEPS
 from .tracing import Trace
@@ -73,6 +74,7 @@ class Agent:
             plan=plan,
             plan_index=0,
             decisions=[],
+            veto_cache={},
             text_calls=[],
             elapsed_ms=0,
             started_at=None,
@@ -139,7 +141,9 @@ class Agent:
             attempt_started = time.perf_counter()
             try:
                 with timed("model"):
-                    state["decision"] = choose(state["page"], state["goal"], state["history"], self.trace, retries)
+                    state["decision"] = choose(
+                        state["page"], state["goal"], state["history"], self.trace, retries, state.get("veto_cache")
+                    )
                 break
             except TransientModelError as error:
                 if retries:
@@ -317,8 +321,11 @@ class Agent:
             if action["kind"] == "click" and action.get("expanded") == "false":
                 wait_ms = self.await_expansion(action, page)
         state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+        page_changed = state["page"]["fingerprint"] != page["fingerprint"]
+        if page_changed and decision.get("request"):
+            state.get("veto_cache", {}).pop(veto_key(decision["request"]), None)
         state["history"][-1].update(
-            page_changed=state["page"]["fingerprint"] != page["fingerprint"],
+            page_changed=page_changed,
             url=state["page"]["url"],
             elapsed_ms=state["elapsed_ms"],
             wait_ms=wait_ms,
