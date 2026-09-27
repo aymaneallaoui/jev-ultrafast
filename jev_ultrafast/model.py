@@ -164,6 +164,7 @@ def choose(state, goal, history, trace=None, retries=None):
         "target": target,
         "confidence": operation_answer["confidence"],
         "probabilities": probabilities,
+        "target_ids": {a["id"]: index for index, a in targets[operation].items()} if operation in targets else {},
         "operation_probabilities": operation_answer["probabilities"],
         "target_probabilities": target_answer["probabilities"] if target_answer else {},
         "target_confidence": target_answer["confidence"] if target_answer else None,

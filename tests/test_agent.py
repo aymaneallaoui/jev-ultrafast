@@ -788,3 +788,57 @@ def test_text_helper_still_rejects_invalid_values(monkeypatch, content):
     monkeypatch.setattr(model, "post_json", lambda *a, **k: {"choices": [{"message": {"content": content}}]})
     with pytest.raises(model.InvalidModelResponse):
         model.field_text({"goal": "g"})
+
+
+def guard_page():
+    p = page()
+    p["actions"] = [{"id": f"e{n}", "kind": "click", "label": label, "role": "button", "value": "", "node": n}
+                    for n, label in enumerate(["Advanced", "Buy It Now", "Price", "Search"], start=1)]
+    return p
+
+
+def guard_decision(choice, probabilities):
+    return {"choice": choice, "operation": "CLICK", "target": str(int(choice[1:])), "confidence": 0.9,
+            "probabilities": probabilities, "target_ids": {f"e{n}": str(n) for n in range(1, 5)}}
+
+
+def test_loop_guard_breaks_an_a_b_cycle_with_a_third_target(runner):
+    runner.state["page"] = guard_page()
+    advanced, buy = {"key": ["CLICK", "Advanced"]}, {"key": ["CLICK", "Buy It Now"]}
+    runner.state["decisions"] = [advanced, buy, advanced]
+    decision = guard_decision("e2", {"e1": 0.3, "e2": 0.4, "e3": 0.2, "e4": 0.1})
+    key = runner.loop_guard(decision, ["CLICK", "Buy It Now"])
+    assert decision["choice"] == "e3" and decision["target"] == "3" and key == ["CLICK", "Price"]
+    assert decision["loop_guard"] == {"pattern": "cycle", "replaced": "Buy It Now", "with": "Price", "probability": 0.2}
+
+
+def test_loop_guard_repeat_without_change_and_repeated_refusals(runner):
+    runner.state["page"] = guard_page()
+    runner.state["decisions"] = []
+    runner.state["history"] = [{"operation": "CLICK", "action": "Search", "page_changed": False}] * 2
+    decision = guard_decision("e4", {"e1": 0.1, "e2": 0.2, "e3": 0.05, "e4": 0.65})
+    assert runner.loop_guard(decision, ["CLICK", "Search"]) == ["CLICK", "Buy It Now"]
+    assert decision["loop_guard"]["pattern"] == "repeat_no_change"
+    runner.state["history"] = []
+    runner.state["refusals"] = [{"action": "Advanced", "after_step": 0}] * 2
+    decision = guard_decision("e1", {"e1": 0.7, "e2": 0.1, "e3": 0.15, "e4": 0.05})
+    assert runner.loop_guard(decision, ["CLICK", "Advanced"]) == ["CLICK", "Price"]
+    assert decision["loop_guard"]["pattern"] == "refused_twice"
+
+
+def test_loop_guard_leaves_progress_alone(runner):
+    runner.state["page"] = guard_page()
+    advanced, price = {"key": ["CLICK", "Advanced"]}, {"key": ["CLICK", "Price"]}
+    runner.state["decisions"] = [advanced, price, advanced]
+    runner.state["history"] = [{"operation": "CLICK", "action": "Search", "page_changed": True}] * 2
+    decision = guard_decision("e2", {"e1": 0.3, "e2": 0.4, "e3": 0.2, "e4": 0.1})
+    assert runner.loop_guard(decision, ["CLICK", "Buy It Now"]) == ["CLICK", "Buy It Now"]
+    assert decision["choice"] == "e2" and "loop_guard" not in decision
+
+
+def test_loop_guard_is_off_without_the_flag_and_never_touches_done(runner, monkeypatch):
+    monkeypatch.delenv("JEV_LOOP_GUARD", raising=False)
+    runner.state["page"] = guard_page()
+    assert runner.decision_key({"choice": "DONE", "operation": "DONE", "target_ids": {}}) is None
+    assert runner.decision_key(guard_decision("e1", {"e1": 1.0})) == ["CLICK", "Advanced"]
+

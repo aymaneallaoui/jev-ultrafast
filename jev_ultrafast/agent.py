@@ -1,11 +1,19 @@
 """The complete agent loop. Typed choices, observable state, bounded execution."""
 
 import base64
+import os
 import time
 from pathlib import Path
 
 from .browser import Browser, StalePage, TargetRefused
-from .model import TransientModelError, action_space, choose, field_context, field_text, text_model
+from .model import (
+    TransientModelError,
+    action_space,
+    choose,
+    field_context,
+    field_text,
+    text_model,
+)
 from .questions import MAX_STEPS
 from .tracing import Trace
 
@@ -145,15 +153,54 @@ class Agent:
             with timed("snapshot"):
                 if not state["browser"].fresh(state["page"]):
                     state["page"] = self.observe(state["page"])
+        key = self.decision_key(state["decision"])
+        if os.environ.get("JEV_LOOP_GUARD") == "1" and key:
+            key = self.loop_guard(state["decision"], key)
         state["decisions"].append(
             {
                 **state["decision"],
+                "key": key,
                 **({"retries": retries} if retries else {}),
                 "fingerprint": state["page"]["fingerprint"],
                 "elapsed_ms": round((time.perf_counter() - state["started_at"]) * 1000),
             }
         )
         state["status"] = "predicted"
+
+    def decision_key(self, decision):
+        """(operation, target label) for a decision that executes something; None for DONE, BLOCKED, and controls."""
+        action = next((a for a in self.state["page"]["actions"] if a["id"] == decision["choice"]), None)
+        if decision["operation"] in {"DONE", "BLOCKED"} or not action or not decision.get("target_ids"):
+            return None
+        return [decision["operation"], action["label"]]
+
+    def loop_guard(self, decision, key):
+        """Swap a looping choice for the runner-up target of the same head. Loops: one action executed twice without
+        a page change and chosen again; an A,B,A,B cycle over the last four decisions; one target refused twice."""
+        state = self.state
+        history, refusals = state["history"], state.get("refusals", [])
+        recent = [d.get("key") for d in state["decisions"][-3:]]
+        avoid, pattern = {key[1]}, None
+        repeated = [[h["operation"], h["action"]] == key and h["page_changed"] is False for h in history[-2:]]
+        if len(repeated) == 2 and all(repeated):
+            pattern = "repeat_no_change"
+        elif len(recent) == 3 and None not in recent and recent[0] == recent[2] != key and recent[1] == key:
+            pattern, avoid = "cycle", {key[1], recent[0][1]}
+        elif len(refusals) >= 2 and all(r["action"] == key[1] and r["after_step"] == len(history)
+                                        for r in refusals[-2:]):
+            pattern = "refused_twice"
+        if not pattern:
+            return key
+        labels = {a["id"]: a["label"] for a in state["page"]["actions"]}
+        ranked = sorted(decision["probabilities"].items(), key=lambda item: -item[1])
+        runner_up = next(((i, p) for i, p in ranked if labels.get(i) not in avoid), None)
+        if runner_up is None:
+            return key
+        note = {"pattern": pattern, "replaced": key[1], "with": labels[runner_up[0]], "probability": runner_up[1]}
+        decision.update(choice=runner_up[0], target=decision["target_ids"][runner_up[0]], loop_guard=note)
+        if self.trace.pending is not None:
+            self.trace.pending["loop_guard"] = note
+        return [key[0], labels[runner_up[0]]]
 
     def act(self, body):
         state, timed = self.state, self.trace.timed
