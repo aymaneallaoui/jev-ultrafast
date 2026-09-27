@@ -156,6 +156,24 @@ Two optional decision guards, off unless their variables are set: `JEV_LOOP_GUAR
 
 With `JEV_VERIFIER_BASE_URL` set, a second server speaking the same `/v1/systemone` API (larger model) re-answers the identical request whenever the primary chooses `DONE`, chooses `BLOCKED`, or picks a target whose probability is below `JEV_CASCADE_TARGET_CONF` (default 0.5). The verifier's answer is used when valid; if its call fails or is invalid, the primary's decision stands. `JEV_VERIFIER_API_KEY` defaults to `TYPESAFE_API_KEY`. With the variable unset nothing changes. The veto cache remembers a verifier response that overrode a `DONE` or `BLOCKED` (not a `target_conf` escalation), keyed by page URL plus a hash of the element labels. When the primary repeats `DONE` or `BLOCKED` on the same key the verifier is skipped and the cached response, re-validated against the current targets, is used (trace `used: "cache"`, with `cache.from_step`); a response that no longer validates is dropped and the verifier is asked. The entry is cleared when an action decided on that page changes the page, and `JEV_VETO_CACHE=0` disables it. The decision and the trace step carry a `cascade` object (`reason`, `used`, `primary`, `verifier`); the step's `answers` are those of the response that was used and `latency_ms` covers both calls. `scripts/serve_cascade.sh [primary-mode] [verifier-mode]` (defaults `08b-d1a`, `4b-nf4`) serves both locally on ports 8009 and 8010 and prints the two variables to export.
 
+### Presets
+
+| Preset | What runs | Verified tasks | Decision latency, median / p90 | GPU memory |
+|---|---|---|---|---|
+| `accurate` | jev-4b nf4 + local text helper on GPU | 25 of 28 | 1,501 / 2,259 ms | servers: 3.30 GiB idle, 5.60 GiB peak for the decision model, 1.8 GiB for the text helper |
+| `fast` | d1a primary + jev-4b nf4 verifier, text helper on CPU | 21 of 28 | 265 / 1,828 ms | servers: 7.6 GiB idle; whole GPU peaked at 14.5 GB during the run |
+
+Measured on an RTX 4090 Laptop GPU (16 GB) with the 28-task smoke set. The `accurate` row's task numbers were measured with the hosted text helper; with the local helper only the four form tasks were rerun (4 of 4 verified, one of six typed values needed a second attempt). `accurate` needs about 7.4 GiB for its two servers at peak, so it fits an 8 GB GPU only if the desktop and browser do not use that GPU's memory. `fast` puts the text helper on the CPU because both decision servers and a GPU text helper do not fit in 16 GB with a browser. See `RESULTS.md` for the full tables.
+
+Text helper on CPU: 0.5 to 0.9 s per call after a first call of 16.7 s (three calls, `-ngl 0`); the `fast` preset itself has not been run end to end yet.
+
+```bash
+scripts/serve_local.sh accurate   # jev-4b nf4 on 8009, text helper on 8080
+scripts/serve_local.sh fast       # d1a on 8009, jev-4b nf4 verifier on 8010, text helper on 8080 (CPU)
+```
+
+Each command starts the servers largest first, waits until they answer, prints the `export` lines to run, and stops every server when interrupted.
+
 `traces_to_kev.py --source DIR` merges further trace directories (for example `raw` with Jev labels and `raw-4b` with Kev-4B labels), each keeping its own `summary.csv` tags; `--exclude` is repeatable, and steps where a guard replaced the model's choice are skipped because their label is not what executed.
 
 ## Comparing decision models
