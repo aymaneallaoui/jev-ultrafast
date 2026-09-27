@@ -62,3 +62,18 @@ The 28-task smoke set with `4b-nf4`: 25/28 DONE, 25/28 verified, median 5.5 step
 | 6-8 GB | nf4 | peaks at 5.6 GiB; at 6 GB very long pages may still not fit |
 
 Peaks are the server alone; the desktop and Chrome use GPU memory on top (about 1-2 GB on the laptop).
+
+## CUDA graphs with small buffers
+
+`~/kev` (branch `jev-serve-memory`) reads the graph buffer sizes from `KEV_GRAPH_STATE_BANK=<entries>x<width>` (default `16x4096`) and `KEV_GRAPH_ROWS=<tokens>` (default `32768`); the row buffer must hold a full bank entry plus a row. Measured with `jev-4b`, `KEV_MAX_BATCH=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, 60 recorded requests sent once to warm the graphs, then timed:
+
+| Mode | Graphs | Idle VRAM | Peak VRAM | Median latency | p90 latency |
+|---|---|---|---|---|---|
+| bf16 | off | 9,018 MiB | 10,846 MiB | 773 ms | 1,360 ms |
+| bf16 | on, 4x4096 bank, 8,192 rows (28 captured) | 11,406 MiB | 14,100 MiB | 788 ms | 1,389 ms |
+| int8 | off | 4,990 MiB | 7,376 MiB | 969 ms | 1,793 ms |
+| int8 | on, 4x4096 bank, 8,192 rows (27 captures failed) | 7,742 MiB | 10,404 MiB | 990 ms | 1,823 ms |
+
+Graphs do not help Kev-4B on Jev requests, so the defaults stay off. The server's model time is 762 of 769 ms per request: a median Jev request is 3,820 tokens (1,568 state, 2,274 question rows, of which the click-target head alone is ~1,200), and Kev-4B costs 168 ms per 1,000 tokens on this GPU, so the pass is compute-bound, not launch-bound. Most states (40 of 60) are longer than the 1,024 tokens the state pass graphs, so they run eagerly anyway. bitsandbytes' int8 matmul cannot be captured, so int8 falls back to eager and only pays for the buffers.
+
+Under 300 ms for Kev-4B on this GPU would need about 1,800 tokens per request. Levers, none applied: send the model the page text at the length it was trained on (the converter truncates it to 1,500 characters, Jev sends up to 6,000), fewer or shorter target heads per request (an agent protocol change), or a smaller model (Kev-0.8B serves in 80-110 ms with graphs).
