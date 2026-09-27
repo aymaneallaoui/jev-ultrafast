@@ -139,3 +139,30 @@ def test_compare_models_reports_rates_steps_and_latency_per_site(tmp_path):
     assert table[("all", "jev")]["runs"] == 2 and table[("all", "jev")]["median_decision_ms"] == 305.0
     assert table[("all", "kev")]["median_steps"] == 4.5
     assert [line["tag"] for line in lines][-1] == "all"
+
+
+def test_relabel_blocked_drops_only_hesitations_followed_by_same_page_progress(tmp_path):
+    def run(run_id, verified, steps):
+        write_run(tmp_path, run_id, "DONE", verified, [op for op, _, _ in steps])
+        path = tmp_path / f"{run_id}.jsonl"
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        for line, (_, url, failed) in zip(lines, steps):
+            line["request"]["state"]["page"]["url"] = url
+            if failed:
+                line["failed_phase"] = "execute"
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    run("hesitant", True, [("WAIT", "a", False), ("CLICK", "a", False),
+                           ("WAIT", "a", False), ("CLICK", "b", False),
+                           ("WAIT", "b", False), ("CLICK", "b", True), ("DONE", "b", False)])
+    run("unchecked", None, [("WAIT", "a", False), ("CLICK", "a", False), ("DONE", "a", False)])
+    write_summary(tmp_path, {"hesitant": "wikipedia", "unchecked": "wikipedia"})
+    plain = traces_to_kev.convert(tmp_path, tmp_path / "kev")
+    relabeled = traces_to_kev.convert(tmp_path, tmp_path / "kev", relabel_blocked=True)
+
+    def total(report):
+        return sum(report[name]["records"] for name in traces_to_kev.FILES)
+
+    assert relabeled["relabeled_hesitations"] == 1
+    assert total(plain) - total(relabeled) == 1
+    assert plain["relabeled_hesitations"] == 0

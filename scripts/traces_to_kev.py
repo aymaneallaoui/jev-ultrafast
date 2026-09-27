@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 TEXT_LIMIT = 1500
 NONPROGRESS = {"WAIT", "BLOCKED"}
+PROGRESS = {"CLICK", "TYPE_TEXT"}
 FILES = ("train", "heldout", "heldout_sites")
 
 
@@ -55,15 +56,36 @@ def load_exclusions(path):
         return {(row["run_id"], int(row["step"])) for row in csv.DictReader(file)}
 
 
-def run_records(trace_dir, run_id, drop_nonprogress, excluded):
-    rows = []
+def operation(step):
+    return step["answers"].get("operation", {}).get("choice")
+
+
+def hesitations(steps):
+    """Indices of BLOCKED/WAIT decisions directly followed by a CLICK or TYPE_TEXT that executed on the same page."""
+    found = set()
+    for i, (step, following) in enumerate(zip(steps, steps[1:])):
+        if (operation(step) in NONPROGRESS and operation(following) in PROGRESS and not following.get("failed_phase")
+                and following["request"]["state"]["page"]["url"] == step["request"]["state"]["page"]["url"]):
+            found.add(i)
+    return found
+
+
+def run_records(trace_dir, run_id, drop_nonprogress, excluded, relabel_blocked=False, counts=None):
+    steps = []
     for line in (trace_dir / f"{run_id}.jsonl").read_text(encoding="utf-8").splitlines():
-        if not line.strip():
+        if line.strip():
+            step = json.loads(line)
+            if step.get("event", "step") == "step":
+                steps.append(step)
+    dropped = hesitations(steps) if relabel_blocked and not drop_nonprogress else set()
+    dropped = {i for i in dropped if (run_id, steps[i].get("step")) not in excluded}
+    if counts is not None:
+        counts["relabeled_hesitations"] = counts.get("relabeled_hesitations", 0) + len(dropped)
+    rows = []
+    for i, step in enumerate(steps):
+        if i in dropped or (run_id, step.get("step")) in excluded:
             continue
-        step = json.loads(line)
-        if step.get("event", "step") != "step" or (run_id, step.get("step")) in excluded:
-            continue
-        if drop_nonprogress and step["answers"].get("operation", {}).get("choice") in NONPROGRESS:
+        if drop_nonprogress and operation(step) in NONPROGRESS:
             continue
         rows.append(record(step))
     return rows
@@ -96,11 +118,12 @@ def stats(rows):
     }
 
 
-def convert(trace_dir, out, drop_nonprogress=False, holdout_tags=(), caps=None, exclude=None, include_untagged=False):
+def convert(trace_dir, out, drop_nonprogress=False, holdout_tags=(), caps=None, exclude=None, include_untagged=False,
+            relabel_blocked=False):
     trace_dir, out = Path(trace_dir), Path(out)
     tags, excluded = run_tags(trace_dir), load_exclusions(exclude)
     runs = {name: [] for name in FILES}
-    hosts, tag_counts, untagged = Counter(), Counter(), 0
+    hosts, tag_counts, untagged, hesitation_counts = Counter(), Counter(), 0, {}
     for meta_path in sorted(trace_dir.glob("*.meta.json")):
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         run_id = meta_path.name.removesuffix(".meta.json")
@@ -111,7 +134,8 @@ def convert(trace_dir, out, drop_nonprogress=False, holdout_tags=(), caps=None, 
         if run_id not in tags and not include_untagged:
             untagged += 1
             continue
-        rows = run_records(trace_dir, run_id, drop_nonprogress, excluded)
+        relabel = relabel_blocked and meta.get("verified") is True
+        rows = run_records(trace_dir, run_id, drop_nonprogress, excluded, relabel, hesitation_counts)
         if not rows:
             continue
         run_tag_list = tags.get(run_id, ["unknown"])
@@ -122,7 +146,8 @@ def convert(trace_dir, out, drop_nonprogress=False, holdout_tags=(), caps=None, 
     for tag, fraction in (caps or {}).items():
         runs["train"], dropped[tag] = cap(runs["train"], tag, fraction)
     out.mkdir(parents=True, exist_ok=True)
-    report = {"dropped_runs_by_cap": dropped, "excluded_steps": len(excluded), "skipped_untagged_runs": untagged}
+    report = {"dropped_runs_by_cap": dropped, "excluded_steps": len(excluded), "skipped_untagged_runs": untagged,
+              "relabeled_hesitations": hesitation_counts.get("relabeled_hesitations", 0)}
     for name, members in runs.items():
         rows = [row for run in members for row in run["records"]]
         for run in members:
@@ -154,6 +179,8 @@ def main(argv=None):
     parser.add_argument("--cap-tag", action="append", default=[], metavar="TAG=FRACTION",
                         help="Keep runs with TAG to at most FRACTION of training records.")
     parser.add_argument("--exclude", help="CSV with run_id,step columns (scripts/audit_traces.py output).")
+    parser.add_argument("--relabel-blocked", action="store_true",
+                        help="In verified DONE runs, drop BLOCKED/WAIT steps that a same-page CLICK/TYPE_TEXT follows.")
     parser.add_argument("--include-untagged", action="store_true",
                         help="Keep runs missing from summary.csv; they cannot be held out or capped by tag.")
     args = parser.parse_args(argv)
@@ -161,7 +188,7 @@ def main(argv=None):
         parser.error("Pass a trace directory or set TRACE_DIR.")
     report = convert(args.trace_dir, args.out or Path(args.trace_dir) / "kev", args.drop_nonprogress,
                      [t for t in args.holdout_tags.split(",") if t], parse_caps(args.cap_tag), args.exclude,
-                     args.include_untagged)
+                     args.include_untagged, args.relabel_blocked)
     print(json.dumps(report, indent=2, ensure_ascii=False))
 
 
