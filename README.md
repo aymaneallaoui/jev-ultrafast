@@ -146,6 +146,10 @@ Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-
 
 `uv run python scripts/summary_by_tag.py traces --since 20260928T1840 --out by-tag.csv` groups `summary.csv` by tag with `verified_true`/`verified_false`/`verified_null` counts and `usable_steps`: decision steps in runs that ended `DONE` without failing verification.
 
+Two optional decision guards, off unless their variables are set: `JEV_LOOP_GUARD=1` swaps a choice for the runner-up target of the same head when the agent loops (the same action twice without a page change, an A,B,A,B cycle over four decisions, or a target refused twice); `JEV_DONE_MIN_CONF` / `JEV_BLOCKED_MIN_CONF` turn a `DONE` / `BLOCKED` whose probability is below the threshold into the next most likely operation, using that operation's own validated target. Trace lines record both as `loop_guard` and `confidence_gate`.
+
+`traces_to_kev.py --source DIR` merges further trace directories (for example `raw` with Jev labels and `raw-4b` with Kev-4B labels), each keeping its own `summary.csv` tags; `--exclude` is repeatable, and steps where a guard replaced the model's choice are skipped because their label is not what executed.
+
 ## Comparing decision models
 
 `scripts/serve_local.sh [08b|08b-6144|4b|RUN] [PORT]` serves a fine-tuned Kev checkpoint from `~/kev/runs` with `kev.serve`, which answers the same `/v1/systemone` requests as TypeSafe. `scripts/kev_smoke.sh MODEL [PORT]` then runs the tasks in `scripts/smoke_ids.txt` with `TYPESAFE_BASE_URL` pointed at it, writing traces to `~/jev-traces/kev-smoke-jev-MODEL` so they never mix with TypeSafe labels. `collect.py --model-tag` records the decision model in `summary.csv` (default: `TYPESAFE_MODEL`), and `--ids` limits a run to listed task ids.

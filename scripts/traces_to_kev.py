@@ -49,11 +49,12 @@ def run_tags(trace_dir):
         return {row["run_id"]: row["tags"].split(";") for row in csv.DictReader(file) if row["run_id"] and row["tags"]}
 
 
-def load_exclusions(path):
-    if not path:
-        return set()
-    with open(path, newline="", encoding="utf-8") as file:
-        return {(row["run_id"], int(row["step"])) for row in csv.DictReader(file)}
+def load_exclusions(paths):
+    excluded = set()
+    for path in [paths] if isinstance(paths, (str, Path)) else paths or []:
+        with open(path, newline="", encoding="utf-8") as file:
+            excluded |= {(row["run_id"], int(row["step"])) for row in csv.DictReader(file)}
+    return excluded
 
 
 def operation(step):
@@ -84,6 +85,10 @@ def run_records(trace_dir, run_id, drop_nonprogress, excluded, relabel_blocked=F
     rows = []
     for i, step in enumerate(steps):
         if i in dropped or (run_id, step.get("step")) in excluded:
+            continue
+        if step.get("loop_guard") or step.get("confidence_gate"):   # the executed choice is not the answer's label
+            if counts is not None:
+                counts["overridden_steps"] = counts.get("overridden_steps", 0) + 1
             continue
         if drop_nonprogress and operation(step) in NONPROGRESS:
             continue
@@ -118,36 +123,42 @@ def stats(rows):
     }
 
 
-def convert(trace_dir, out, drop_nonprogress=False, holdout_tags=(), caps=None, exclude=None, include_untagged=False,
+def convert(trace_dirs, out, drop_nonprogress=False, holdout_tags=(), caps=None, exclude=None, include_untagged=False,
             relabel_blocked=False):
-    trace_dir, out = Path(trace_dir), Path(out)
-    tags, excluded = run_tags(trace_dir), load_exclusions(exclude)
+    """trace_dirs: one trace directory or several (e.g. Jev-labelled and Kev-labelled collections), merged by run id."""
+    out, excluded = Path(out), load_exclusions(exclude)
     runs = {name: [] for name in FILES}
-    hosts, tag_counts, untagged, hesitation_counts = Counter(), Counter(), 0, {}
-    for meta_path in sorted(trace_dir.glob("*.meta.json")):
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        run_id = meta_path.name.removesuffix(".meta.json")
-        if meta.get("status") != "DONE" or meta.get("verified") not in (True, None):
-            continue
-        if not (trace_dir / f"{run_id}.jsonl").exists():
-            continue
-        if run_id not in tags and not include_untagged:
-            untagged += 1
-            continue
-        relabel = relabel_blocked and meta.get("verified") is True
-        rows = run_records(trace_dir, run_id, drop_nonprogress, excluded, relabel, hesitation_counts)
-        if not rows:
-            continue
-        run_tag_list = tags.get(run_id, ["unknown"])
-        destination = "heldout_sites" if set(run_tag_list) & set(holdout_tags) else split(run_id)
-        runs[destination].append({"run_id": run_id, "tags": run_tag_list, "records": rows,
-                                  "host": urlparse(meta.get("url", "")).hostname or "unknown"})
+    hosts, tag_counts, untagged, hesitation_counts, sources = Counter(), Counter(), 0, {}, {}
+    trace_dirs = [trace_dirs] if isinstance(trace_dirs, (str, Path)) else trace_dirs
+    for trace_dir in map(Path, trace_dirs):
+        tags, kept = run_tags(trace_dir), sources.setdefault(str(trace_dir), {"runs": 0, "records": 0})
+        for meta_path in sorted(trace_dir.glob("*.meta.json")):
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            run_id = meta_path.name.removesuffix(".meta.json")
+            if meta.get("status") != "DONE" or meta.get("verified") not in (True, None):
+                continue
+            if not (trace_dir / f"{run_id}.jsonl").exists():
+                continue
+            if run_id not in tags and not include_untagged:
+                untagged += 1
+                continue
+            relabel = relabel_blocked and meta.get("verified") is True
+            rows = run_records(trace_dir, run_id, drop_nonprogress, excluded, relabel, hesitation_counts)
+            if not rows:
+                continue
+            run_tag_list = tags.get(run_id, ["unknown"])
+            destination = "heldout_sites" if set(run_tag_list) & set(holdout_tags) else split(run_id)
+            runs[destination].append({"run_id": run_id, "tags": run_tag_list, "records": rows,
+                                      "host": urlparse(meta.get("url", "")).hostname or "unknown"})
+            kept["runs"] += 1
+            kept["records"] += len(rows)
     dropped = {}
     for tag, fraction in (caps or {}).items():
         runs["train"], dropped[tag] = cap(runs["train"], tag, fraction)
     out.mkdir(parents=True, exist_ok=True)
     report = {"dropped_runs_by_cap": dropped, "excluded_steps": len(excluded), "skipped_untagged_runs": untagged,
-              "relabeled_hesitations": hesitation_counts.get("relabeled_hesitations", 0)}
+              "relabeled_hesitations": hesitation_counts.get("relabeled_hesitations", 0),
+              "overridden_steps": hesitation_counts.get("overridden_steps", 0), "sources": sources}
     for name, members in runs.items():
         rows = [row for run in members for row in run["records"]]
         for run in members:
@@ -173,20 +184,24 @@ def parse_caps(values):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("trace_dir", nargs="?", default=os.environ.get("TRACE_DIR"))
+    parser.add_argument("--source", action="append", default=[], metavar="DIR",
+                        help="Another trace directory to merge (repeatable); runs keep their own summary.csv tags.")
     parser.add_argument("--out", help="Output folder (default: TRACE_DIR/kev).")
     parser.add_argument("--drop-nonprogress", action="store_true", help="Drop WAIT and BLOCKED decisions.")
     parser.add_argument("--holdout-tags", default="", help="Comma-separated tags sent only to heldout_sites.jsonl.")
     parser.add_argument("--cap-tag", action="append", default=[], metavar="TAG=FRACTION",
                         help="Keep runs with TAG to at most FRACTION of training records.")
-    parser.add_argument("--exclude", help="CSV with run_id,step columns (scripts/audit_traces.py output).")
+    parser.add_argument("--exclude", action="append", default=[],
+                        help="CSV with run_id,step columns (scripts/audit_traces.py output); repeatable.")
     parser.add_argument("--relabel-blocked", action="store_true",
                         help="In verified DONE runs, drop BLOCKED/WAIT steps that a same-page CLICK/TYPE_TEXT follows.")
     parser.add_argument("--include-untagged", action="store_true",
                         help="Keep runs missing from summary.csv; they cannot be held out or capped by tag.")
     args = parser.parse_args(argv)
-    if not args.trace_dir:
-        parser.error("Pass a trace directory or set TRACE_DIR.")
-    report = convert(args.trace_dir, args.out or Path(args.trace_dir) / "kev", args.drop_nonprogress,
+    sources = [d for d in [args.trace_dir, *args.source] if d]
+    if not sources:
+        parser.error("Pass a trace directory, --source, or set TRACE_DIR.")
+    report = convert(sources, args.out or Path(sources[0]) / "kev", args.drop_nonprogress,
                      [t for t in args.holdout_tags.split(",") if t], parse_caps(args.cap_tag), args.exclude,
                      args.include_untagged, args.relabel_blocked)
     print(json.dumps(report, indent=2, ensure_ascii=False))

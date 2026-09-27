@@ -166,3 +166,22 @@ def test_relabel_blocked_drops_only_hesitations_followed_by_same_page_progress(t
     assert relabeled["relabeled_hesitations"] == 1
     assert total(plain) - total(relabeled) == 1
     assert plain["relabeled_hesitations"] == 0
+
+
+def test_converter_merges_sources_and_skips_overridden_steps(tmp_path):
+    jev, kev = tmp_path / "raw", tmp_path / "raw-4b"
+    jev.mkdir(), kev.mkdir()
+    write_run(jev, "jev-run", "DONE", True, ["CLICK", "DONE"])
+    write_run(kev, "kev-run", "DONE", True, ["CLICK", "CLICK", "DONE"])
+    path = kev / "kev-run.jsonl"
+    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines[1]["loop_guard"] = {"pattern": "cycle"}
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    write_summary(jev, {"jev-run": "wikipedia"})
+    write_summary(kev, {"kev-run": "mdn"})
+    audit = tmp_path / "audit-4b.csv"
+    audit.write_text("run_id,step,operation,confidence,reason\nkev-run,3,DONE,0.4,low_confidence\n")
+    report = traces_to_kev.convert([jev, kev], tmp_path / "kev", holdout_tags=["mdn"], exclude=[audit])
+    assert report["sources"] == {str(jev): {"runs": 1, "records": 2}, str(kev): {"runs": 1, "records": 1}}
+    assert report["overridden_steps"] == 1 and report["excluded_steps"] == 1
+    assert report["heldout_sites"]["records"] == 1
