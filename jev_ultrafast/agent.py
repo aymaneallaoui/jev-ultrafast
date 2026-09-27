@@ -25,6 +25,7 @@ EMPTY_RETRIES = 5
 EMPTY_RETRY_MS = 100
 DECISION_RETRY_MS = 1000
 REFUSAL_LIMIT = 3
+GATE_MIN_ALTERNATIVE = 0.15
 clock = time.monotonic
 sleep = time.sleep
 
@@ -172,7 +173,8 @@ class Agent:
 
     def confidence_gate(self, decision):
         """A DONE or BLOCKED below JEV_DONE_MIN_CONF / JEV_BLOCKED_MIN_CONF becomes the next most likely other
-        operation, with that operation's own (validated) target head. Unset thresholds change nothing."""
+        operation whose probability exceeds GATE_MIN_ALTERNATIVE, with its own validated target head. Unset thresholds
+        change nothing."""
         operation = decision["operation"]
         threshold = os.environ.get({"DONE": "JEV_DONE_MIN_CONF", "BLOCKED": "JEV_BLOCKED_MIN_CONF"}.get(operation, ""))
         probability = decision["operation_probabilities"].get(operation, 1.0)
@@ -183,6 +185,8 @@ class Agent:
         for fallback, p in ranked:
             if fallback in {"DONE", "BLOCKED"}:
                 continue
+            if p <= GATE_MIN_ALTERNATIVE:
+                break
             if fallback in targets:
                 try:
                     head = decision["raw_answers"].get(fallback.lower() + "_target", {})
@@ -197,11 +201,13 @@ class Agent:
                 target, choice, ids, probabilities = None, controls[fallback]["id"], {}, {controls[fallback]["id"]: p}
             else:
                 continue
-            note = {"from": operation, "probability": probability, "threshold": float(threshold), "to": fallback}
+            note = {"from": operation, "probability": probability, "threshold": float(threshold), "to": fallback,
+                    "to_probability": p}
+            gated = {"confidence_gate": note, f"{operation.lower()}_gated": True}
             decision.update(operation=fallback, choice=choice, target=target, target_ids=ids,
-                            probabilities=probabilities, confidence_gate=note)
+                            probabilities=probabilities, **gated)
             if self.trace.pending is not None:
-                self.trace.pending["confidence_gate"] = note
+                self.trace.pending.update(gated)
             return
 
     def decision_key(self, decision):

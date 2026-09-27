@@ -851,10 +851,11 @@ def gate_decision(operation, probabilities):
 
 def test_low_confidence_done_becomes_the_runner_up_operation_with_its_validated_target(runner, monkeypatch):
     monkeypatch.setenv("JEV_DONE_MIN_CONF", "0.72")
-    decision = gate_decision("DONE", {"DONE": 0.6, "BLOCKED": 0.25, "CLICK": 0.1, "WAIT": 0.05})
+    decision = gate_decision("DONE", {"DONE": 0.6, "BLOCKED": 0.05, "CLICK": 0.3, "WAIT": 0.05})
     runner.confidence_gate(decision)
     assert (decision["operation"], decision["choice"], decision["target"]) == ("CLICK", "e3", "2")
-    assert decision["confidence_gate"] == {"from": "DONE", "probability": 0.6, "threshold": 0.72, "to": "CLICK"}
+    assert decision["confidence_gate"] == {
+        "from": "DONE", "probability": 0.6, "threshold": 0.72, "to": "CLICK", "to_probability": 0.3}
     assert decision["probabilities"] == {"e2": 0.1, "e3": 0.9}
 
 
@@ -878,7 +879,7 @@ def test_low_confidence_blocked_can_fall_back_to_a_control(runner, monkeypatch):
 
 def test_gate_skips_an_invalid_fallback_head(runner, monkeypatch):
     monkeypatch.setenv("JEV_DONE_MIN_CONF", "0.72")
-    decision = gate_decision("DONE", {"DONE": 0.6, "CLICK": 0.3, "WAIT": 0.1})
+    decision = gate_decision("DONE", {"DONE": 0.6, "CLICK": 0.24, "WAIT": 0.16})
     decision["raw_answers"]["click_target"] = {"choice": "9", "confidence": 1.0, "probabilities": {"9": 1.0}}
     runner.confidence_gate(decision)
     assert decision["operation"] == "WAIT"
@@ -886,3 +887,29 @@ def test_gate_skips_an_invalid_fallback_head(runner, monkeypatch):
     only_click["raw_answers"]["click_target"] = {"choice": "9", "confidence": 1.0, "probabilities": {"9": 1.0}}
     runner.confidence_gate(only_click)
     assert only_click["operation"] == "DONE"
+
+
+def test_gate_marks_a_gated_done_and_writes_the_mark_to_the_pending_trace_step(runner, monkeypatch):
+    monkeypatch.setenv("JEV_DONE_MIN_CONF", "0.9")
+    runner.trace.pending = {}
+    decision = gate_decision("DONE", {"DONE": 0.6, "CLICK": 0.4})
+    runner.confidence_gate(decision)
+    assert decision["operation"] == "CLICK" and decision["done_gated"] is True
+    assert "blocked_gated" not in decision
+    assert runner.trace.pending["done_gated"] is True
+    assert runner.trace.pending["confidence_gate"]["to_probability"] == 0.4
+
+
+def test_gate_does_not_fire_when_no_alternative_clears_the_floor(runner, monkeypatch):
+    monkeypatch.setenv("JEV_DONE_MIN_CONF", "0.9")
+    decision = gate_decision("DONE", {"DONE": 0.88, "CLICK": 0.12})
+    runner.confidence_gate(decision)
+    assert decision["operation"] == "DONE"
+    assert "confidence_gate" not in decision and "done_gated" not in decision
+
+
+def test_gate_marks_a_gated_blocked(runner, monkeypatch):
+    monkeypatch.setenv("JEV_BLOCKED_MIN_CONF", "0.9")
+    decision = gate_decision("BLOCKED", {"BLOCKED": 0.6, "CLICK": 0.4})
+    runner.confidence_gate(decision)
+    assert decision["operation"] == "CLICK" and decision["blocked_gated"] is True and "done_gated" not in decision
