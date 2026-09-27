@@ -2,6 +2,7 @@
 
 import base64
 import json
+import threading
 import time
 from copy import deepcopy
 from datetime import date
@@ -615,7 +616,7 @@ def test_text_helper_retries_once_and_records_both_attempts(runner, monkeypatch,
     post = Mock(side_effect=[failure, text_reply('{"text":"book"}')])
     monkeypatch.setattr(model, "post_json", post)
     act(runner)
-    assert [c.kwargs["timeout"] for c in post.call_args_list] == [model.TEXT_TIMEOUT_S] * 2 == [20, 20]
+    assert post.call_count == 2 and all(c.kwargs["deadline"] > time.monotonic() - 1 for c in post.call_args_list)
     calls = runner.state["text_calls"]
     assert [c.get("failed", False) for c in calls] == [True, False] and calls[1]["value"] == "book"
     runner.state["browser"].act.assert_called_once()
@@ -1030,3 +1031,61 @@ def test_cascade_falls_back_to_primary_when_verifier_fails(monkeypatch, tmp_path
     assert d["cascade"]["used"] == "primary" and d["cascade"]["verifier"]["error"]
     step = json.loads((tmp_path / f"{trace.run_id}.jsonl").read_text().splitlines()[0])
     assert step["answers"]["operation"]["choice"] == "DONE"
+
+
+TEXT_REPLY = {"choices": [{"message": {"content": '{"text":"Zurich"}'}}], "usage": {"input_tokens": 3}}
+
+
+def test_text_helper_returns_value_and_metadata_within_budget(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setattr(model, "post_json", lambda *a, **k: TEXT_REPLY)
+    value, helper = model.field_text({"goal": "g"})
+    assert value == "Zurich"
+    assert helper["model"] == model.text_model() and helper["usage"] == {"input_tokens": 3}
+
+
+def test_text_helper_budget_bounds_a_blocked_request(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_TIMEOUT_S", "0.2")
+    release = threading.Event()
+    monkeypatch.setattr(model, "post_json", lambda *a, **k: release.wait(5) and TEXT_REPLY)
+    started = time.perf_counter()
+    with pytest.raises(model.ModelConnectionError, match="time budget; nothing typed"):
+        model.field_text({"goal": "g"})
+    assert time.perf_counter() - started < 1
+    release.set()
+
+
+def test_text_helper_budget_bounds_overload_retries(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_TIMEOUT_S", "0.2")
+    overloaded = Mock(return_value=Mock(status_code=503, is_error=True))
+    monkeypatch.setattr(model.CLIENT, "post", overloaded)
+    started = time.perf_counter()
+    with pytest.raises(model.ModelConnectionError, match="time budget; nothing typed"):
+        model.field_text({"goal": "g"})
+    assert time.perf_counter() - started < 0.6
+    assert overloaded.call_args.kwargs["timeout"].read <= 0.2
+
+
+def test_text_budget_env_override(monkeypatch):
+    monkeypatch.delenv("TEXT_TIMEOUT_S", raising=False)
+    assert model.text_budget_s() == model.TEXT_TIMEOUT_S == 20
+    monkeypatch.setenv("TEXT_TIMEOUT_S", "3.5")
+    assert model.text_budget_s() == 3.5
+
+
+def test_late_text_reply_is_never_used(monkeypatch):
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    monkeypatch.setenv("TEXT_TIMEOUT_S", "0.1")
+    finished = threading.Event()
+
+    def slow(*a, **k):
+        time.sleep(0.3)
+        finished.set()
+        return TEXT_REPLY
+
+    monkeypatch.setattr(model, "post_json", slow)
+    with pytest.raises(model.ModelConnectionError):
+        model.field_text({"goal": "g"})
+    assert finished.wait(2)

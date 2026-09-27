@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import threading
 import time
 
 import httpx
@@ -10,7 +11,7 @@ import httpx
 from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
-TEXT_TIMEOUT_S = 20
+TEXT_TIMEOUT_S = 20.0
 RAW_LIMIT = 2000
 
 
@@ -22,23 +23,63 @@ class ModelConnectionError(TransientModelError, RuntimeError):
     pass
 
 
+class BudgetExceeded(ModelConnectionError):
+    pass
+
+
 class InvalidModelResponse(TransientModelError, ValueError):
     pass
 
 
-def post_json(url, key, body, timeout=httpx.USE_CLIENT_DEFAULT):
+def post_json(url, key, body, timeout=httpx.USE_CLIENT_DEFAULT, deadline=None):
+    """POST with retries on overload. `deadline` is a time.monotonic() instant bounding every attempt and sleep."""
     for attempt in range(3):
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BudgetExceeded("Model call exceeded its time budget; no action executed.")
+            timeout = httpx.Timeout(remaining)
         try:
             response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"}, timeout=timeout)
         except httpx.HTTPError:
             raise ModelConnectionError("Model connection failed; no action executed.") from None
         if response.status_code in {429, 529, 503} and attempt < 2:
-            time.sleep(0.5 * 2**attempt)
+            pause = 0.5 * 2**attempt
+            time.sleep(pause if deadline is None else min(pause, max(deadline - time.monotonic(), 0)))
             continue
         if response.is_error:
             raise RuntimeError(f"Model provider returned HTTP {response.status_code}; no action executed.")
         return response.json()
     raise RuntimeError("Model unavailable")
+
+
+def text_budget_s():
+    return float(os.environ.get("TEXT_TIMEOUT_S", TEXT_TIMEOUT_S))
+
+
+def post_within(budget_s, *args, **kwargs):
+    """Run post_json in a daemon thread and give up after budget_s; a late reply is discarded."""
+    deadline = time.monotonic() + budget_s
+    outcome = {}
+    done = threading.Event()
+
+    def work():
+        try:
+            outcome["result"] = post_json(*args, deadline=deadline, **kwargs)
+        except BaseException as error:
+            outcome["error"] = error
+        finally:
+            done.set()
+
+    threading.Thread(target=work, daemon=True).start()
+    exceeded = ModelConnectionError(f"Text helper exceeded its {budget_s:g}s time budget; nothing typed.")
+    if not done.wait(budget_s):
+        raise exceeded
+    if isinstance(outcome.get("error"), BudgetExceeded):
+        raise exceeded
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["result"]
 
 
 def validate_choice(answer, ids):
@@ -265,7 +306,8 @@ def field_text(context):
     if os.environ.get("TEXT_MODEL_REASONING") == "none":
         reasoning = {"reasoning": {"enabled": False}}
     started = time.perf_counter()
-    result = post_json(
+    result = post_within(
+        text_budget_s(),
         base + "/chat/completions",
         key,
         {
@@ -281,7 +323,6 @@ def field_text(context):
                 },
             ],
         },
-        timeout=TEXT_TIMEOUT_S,
     )
     content = None
     try:
