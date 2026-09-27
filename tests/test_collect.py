@@ -33,10 +33,11 @@ def test_unknown_placeholders_fail_at_load(text):
 
 def test_tasks_file_has_the_planned_distribution():
     tasks = collect.load_tasks(ROOT / "tasks.yaml", TODAY)
-    assert len(tasks) == 75 and len({t["id"] for t in tasks}) == 75
+    assert len(tasks) == 95 and len({t["id"] for t in tasks}) == 95
     assert Counter(t["tags"][0] for t in tasks) == {
         "google_flights": 12, "wikipedia": 10, "hackernews": 6, "github": 8, "mdn": 5,
-        "openstreetmap": 4, "forms": 21, "youtube": 4, "ebay": 5,
+        "openstreetmap": 4, "forms": 21, "youtube": 4, "ebay": 5, "stackoverflow": 2, "arxiv": 2, "amazon": 2,
+        "booking": 2, "imdb": 2, "npm": 2, "pypi": 2, "reuters": 2, "weather": 2, "huggingface": 2,
     }
     for task in tasks:
         assert "{" not in task["goal"] and "Stop when" in task["goal"]

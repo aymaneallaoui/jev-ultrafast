@@ -500,3 +500,124 @@
   verify_args:
     url: httpbin\.org/post$
     values: ['"custname": "Test User"', '"size": "medium"', '"topping": "bacon"']
+- id: stackoverflow-tag-rust
+  url: https://stackoverflow.com/questions
+  goal: Open the list of Stack Overflow questions tagged rust. Stop when the rust tag's question list is visible. Do not sign in.
+  tags: [stackoverflow, open_tag]
+  verify: page
+  verify_args: {url: 'stackoverflow\.com/questions/tagged/rust(\?|$)'}
+- id: stackoverflow-tag-javascript
+  url: https://stackoverflow.com/questions
+  goal: Open the list of Stack Overflow questions tagged javascript. Stop when the javascript tag's question list is visible. Do not sign in.
+  tags: [stackoverflow, open_tag]
+  verify: page
+  verify_args: {url: 'stackoverflow\.com/questions/tagged/javascript(\?|$)'}
+- id: arxiv-search-attention
+  url: https://arxiv.org/
+  goal: Search arXiv for attention is all you need. Stop when the search results are visible.
+  tags: [arxiv, search]
+  verify: page
+  verify_args: {url: 'arxiv\.org/search/.*[?&]query=attention is all you need(&|$)'}
+- id: arxiv-open-1706-03762
+  url: https://arxiv.org/
+  goal: Open the arXiv abstract page for paper 1706.03762. Stop when that paper's abstract page is visible.
+  tags: [arxiv, open_paper]
+  verify: page
+  verify_args: {url: 'arxiv\.org/abs/1706\.03762(v\d+)?$'}
+- id: amazon-search-usb-hub
+  url: https://www.amazon.com/
+  goal: Search Amazon for a USB C hub. Stop when the search results are visible. Do not add anything to the cart, purchase, or sign in.
+  tags: [amazon, search]
+  verify: page
+  verify_args: {url: 'amazon\.com/s\?.*k=[^&]*usb[- ]?c hub'}
+- id: amazon-sort-usb-hub-price
+  url: https://www.amazon.com/
+  goal: Search Amazon for a USB C hub and sort the results by price from low to high. Stop when the sorted results are visible. Do not add anything to the cart, purchase, or sign in.
+  tags: [amazon, search_filter]
+  verify: page
+  verify_args:
+    url: ['amazon\.com/s\?.*k=[^&]*usb[- ]?c hub', '[?&]s=price-asc-rank(&|$)']
+- id: booking-search-paris
+  url: https://www.booking.com/
+  goal: Search Booking.com for hotels in Paris. Stop when the Paris search results are visible. Do not book or sign in.
+  tags: [booking, search]
+  verify: page
+  verify_args: {url: 'booking\.com/searchresults.*[?&]ss=paris'}
+- id: booking-search-rome
+  url: https://www.booking.com/
+  goal: Search Booking.com for hotels in Rome. Stop when the Rome search results are visible. Do not book or sign in.
+  tags: [booking, search]
+  verify: page
+  verify_args: {url: 'booking\.com/searchresults.*[?&]ss=rome'}
+- id: imdb-search-inception
+  url: https://www.imdb.com/
+  goal: Search IMDb for Inception. Stop when the search results are visible. Do not sign in.
+  tags: [imdb, search]
+  verify: page
+  verify_args: {url: 'imdb\.com/find/?\?.*q=inception'}
+- id: imdb-open-the-matrix
+  url: https://www.imdb.com/
+  goal: Open the IMDb page for the 1999 film The Matrix. Stop when that film's page is visible. Do not sign in.
+  tags: [imdb, open_title]
+  verify: page
+  verify_args: {url: imdb\.com/title/tt0133093}
+- id: npm-search-express
+  url: https://www.npmjs.com/
+  goal: Search npm for the express package. Stop when the search results are visible. Do not sign in.
+  tags: [npm, search]
+  verify: page
+  verify_args: {url: 'npmjs\.com/search\?q=express(&|$)'}
+- id: npm-search-react
+  url: https://www.npmjs.com/
+  goal: Search npm for the react package. Stop when the search results are visible. Do not sign in.
+  tags: [npm, search]
+  verify: page
+  verify_args: {url: 'npmjs\.com/search\?q=react(&|$)'}
+- id: pypi-search-requests
+  url: https://pypi.org/
+  goal: Search PyPI for the requests package. Stop when the search results are visible. Do not sign in.
+  tags: [pypi, search]
+  verify: page
+  verify_args: {url: 'pypi\.org/search/\?q=requests(&|$)'}
+- id: pypi-open-numpy
+  url: https://pypi.org/
+  goal: Open the PyPI project page for numpy. Stop when the numpy project page is visible. Do not sign in.
+  tags: [pypi, open_project]
+  verify: page
+  verify_args: {url: 'pypi\.org/project/numpy/?$'}
+- id: reuters-search-inflation
+  url: https://www.reuters.com/
+  goal: Search Reuters for inflation. Stop when the search results are visible. Do not sign in.
+  tags: [reuters, search]
+  verify: page
+  verify_args: {url: 'reuters\.com/site-search/\?.*query=inflation'}
+- id: reuters-open-technology
+  url: https://www.reuters.com/
+  goal: Open the Technology section of Reuters. Stop when the Technology section page is visible. Do not sign in.
+  tags: [reuters, open_section]
+  verify: page
+  verify_args: {url: 'reuters\.com/technology/?$'}
+- id: weather-ten-day
+  url: https://weather.com/
+  goal: Open the 10 day forecast for the current location. Stop when the 10 day forecast is visible. Do not sign in.
+  tags: [weather, open_forecast]
+  verify: page
+  verify_args: {url: weather\.com/.*tenday}
+- id: weather-hourly
+  url: https://weather.com/
+  goal: Open the hourly forecast for the current location. Stop when the hourly forecast is visible. Do not sign in.
+  tags: [weather, open_forecast]
+  verify: page
+  verify_args: {url: weather\.com/.*hourbyhour}
+- id: huggingface-search-bert
+  url: https://huggingface.co/models
+  goal: Search Hugging Face models for bert. Stop when the model search results are visible. Do not sign in.
+  tags: [huggingface, search]
+  verify: page
+  verify_args: {url: 'huggingface\.co/models\?.*search=bert'}
+- id: huggingface-open-gpt2
+  url: https://huggingface.co/
+  goal: Open the openai-community/gpt2 model page on Hugging Face. Stop when that model page is visible. Do not sign in.
+  tags: [huggingface, open_model]
+  verify: page
+  verify_args: {url: 'huggingface\.co/openai-community/gpt2/?$'}
