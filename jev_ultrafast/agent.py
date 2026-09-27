@@ -7,12 +7,14 @@ from pathlib import Path
 
 from .browser import Browser, StalePage, TargetRefused
 from .model import (
+    InvalidModelResponse,
     TransientModelError,
     action_space,
     choose,
     field_context,
     field_text,
     text_model,
+    validate_choice,
 )
 from .questions import MAX_STEPS
 from .tracing import Trace
@@ -153,6 +155,7 @@ class Agent:
             with timed("snapshot"):
                 if not state["browser"].fresh(state["page"]):
                     state["page"] = self.observe(state["page"])
+        self.confidence_gate(state["decision"])
         key = self.decision_key(state["decision"])
         if os.environ.get("JEV_LOOP_GUARD") == "1" and key:
             key = self.loop_guard(state["decision"], key)
@@ -166,6 +169,40 @@ class Agent:
             }
         )
         state["status"] = "predicted"
+
+    def confidence_gate(self, decision):
+        """A DONE or BLOCKED below JEV_DONE_MIN_CONF / JEV_BLOCKED_MIN_CONF becomes the next most likely other
+        operation, with that operation's own (validated) target head. Unset thresholds change nothing."""
+        operation = decision["operation"]
+        threshold = os.environ.get({"DONE": "JEV_DONE_MIN_CONF", "BLOCKED": "JEV_BLOCKED_MIN_CONF"}.get(operation, ""))
+        probability = decision["operation_probabilities"].get(operation, 1.0)
+        if not threshold or probability >= float(threshold):
+            return
+        _, targets, controls = action_space(self.state["page"]["actions"])
+        ranked = sorted(decision["operation_probabilities"].items(), key=lambda item: -item[1])
+        for fallback, p in ranked:
+            if fallback in {"DONE", "BLOCKED"}:
+                continue
+            if fallback in targets:
+                try:
+                    head = decision["raw_answers"].get(fallback.lower() + "_target", {})
+                    answer = validate_choice(head, targets[fallback])
+                except InvalidModelResponse:
+                    continue
+                target = answer["choice"]
+                choice = targets[fallback][target]["id"]
+                ids = {a["id"]: index for index, a in targets[fallback].items()}
+                probabilities = {a["id"]: answer["probabilities"][index] for index, a in targets[fallback].items()}
+            elif fallback in controls:
+                target, choice, ids, probabilities = None, controls[fallback]["id"], {}, {controls[fallback]["id"]: p}
+            else:
+                continue
+            note = {"from": operation, "probability": probability, "threshold": float(threshold), "to": fallback}
+            decision.update(operation=fallback, choice=choice, target=target, target_ids=ids,
+                            probabilities=probabilities, confidence_gate=note)
+            if self.trace.pending is not None:
+                self.trace.pending["confidence_gate"] = note
+            return
 
     def decision_key(self, decision):
         """(operation, target label) for a decision that executes something; None for DONE, BLOCKED, and controls."""
