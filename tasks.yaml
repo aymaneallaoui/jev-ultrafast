@@ -378,3 +378,125 @@
   verify: page
   verify_args:
     url: ['ebay\.com/sch/i\.html\?.*_nkw=[^&]*noise cancel', '[?&]LH_ItemCondition=1000(&|$)']
+- id: forms-demoqa-practice-basic
+  url: https://demoqa.com/automation-practice-form
+  goal: "Fill the student registration form with first name Test, last name User, email test@example.com, gender Male, and mobile number 5550100100. Stop when those values are visible in the form. Do not submit the form."
+  tags: [forms, demoqa]
+  verify: page
+  verify_args:
+    url: demoqa\.com/automation-practice-form$
+    fields: {First Name: Test, Last Name: User, name@example.com: test@example.com, Male: true, Mobile Number: '5550100100'}
+- id: forms-demoqa-practice-hobbies
+  url: https://demoqa.com/automation-practice-form
+  goal: "Fill the student registration form with first name Test, last name User, email test@example.com, the hobbies Sports and Music, and current address 1 Test Street. Stop when those values are visible in the form. Do not submit the form."
+  tags: [forms, demoqa]
+  verify: page
+  verify_args:
+    url: demoqa\.com/automation-practice-form$
+    fields: {First Name: Test, Last Name: User, name@example.com: test@example.com, Sports: true, Music: true, Current Address: 1 Test Street}
+- id: forms-demoqa-text-box
+  url: https://demoqa.com/text-box
+  goal: "Fill the text box form with full name Test User, email test@example.com, and current address 1 Test Street. Stop when those values are visible in the form. Do not submit the form."
+  tags: [forms, demoqa]
+  verify: page
+  verify_args:
+    url: demoqa\.com/text-box$
+    fields: {Full Name: Test User, name@example.com: test@example.com, Current Address: 1 Test Street}
+- id: forms-demoqa-old-select
+  url: https://demoqa.com/select-menu
+  goal: "In the old style select menu, choose Blue. Stop when Blue is visibly selected. Do not submit anything."
+  tags: [forms, demoqa]
+  verify: page
+  verify_args:
+    url: demoqa\.com/select-menu$
+    values: [Blue]
+- id: forms-demoqa-date-picker
+  url: https://demoqa.com/date-picker
+  goal: "Set the Select Date field to 10/15/2026. Stop when 10/15/2026 is visible in that field. Do not submit anything."
+  tags: [forms, demoqa]
+  verify: page
+  verify_args:
+    url: demoqa\.com/date-picker$
+    values: [10/15/2026]
+- id: forms-internet-dropdown
+  url: https://the-internet.herokuapp.com/dropdown
+  goal: "Choose Option 2 in the dropdown list. Stop when Option 2 is visibly selected."
+  tags: [forms, the_internet]
+  verify: page
+  verify_args:
+    url: the-internet\.herokuapp\.com/dropdown$
+    values: [Option 2]
+- id: forms-internet-checkboxes
+  url: https://the-internet.herokuapp.com/checkboxes
+  goal: "Make sure both checkboxes are checked. Stop when both checkboxes are visibly checked."
+  tags: [forms, the_internet]
+  verify: page
+  verify_args:
+    url: the-internet\.herokuapp\.com/checkboxes$
+    checked: {checkbox: 2}
+- id: forms-internet-dynamic-controls
+  url: https://the-internet.herokuapp.com/dynamic_controls
+  goal: "Enable the disabled text field, then type Test User into it. Stop when Test User is visible in the enabled field."
+  tags: [forms, the_internet]
+  verify: page
+  verify_args:
+    url: the-internet\.herokuapp\.com/dynamic_controls$
+    text: "It's enabled!"
+    values: [Test User]
+- id: forms-expandtesting-login-username
+  url: https://practice.expandtesting.com/login
+  goal: "Enter the username testuser in the login form. Stop when testuser is visible in the username field. Do not submit the form."
+  tags: [forms, expandtesting]
+  verify: page
+  verify_args:
+    url: practice\.expandtesting\.com/login$
+    fields: {Username: testuser}
+- id: forms-expandtesting-register-username
+  url: https://practice.expandtesting.com/register
+  goal: "Enter the username testuser in the registration form. Stop when testuser is visible in the username field. Do not submit the form."
+  tags: [forms, expandtesting]
+  verify: page
+  verify_args:
+    url: practice\.expandtesting\.com/register$
+    fields: {Username: testuser}
+- id: forms-formy-basic
+  url: https://formy-project.herokuapp.com/form
+  goal: "Fill the form with first name Test, last name User, and job title QA Engineer. Stop when those values are visible in the form. Do not submit the form."
+  tags: [forms, formy]
+  verify: page
+  verify_args:
+    url: formy-project\.herokuapp\.com/form$
+    fields: {First name: Test, Last name: User, Job title: QA Engineer}
+- id: forms-formy-experience
+  url: https://formy-project.herokuapp.com/form
+  goal: "Fill the form with first name Test and last name User, and choose 2-4 years of experience. Stop when those values are visible in the form. Do not submit the form."
+  tags: [forms, formy]
+  verify: page
+  verify_args:
+    url: formy-project\.herokuapp\.com/form$
+    fields: {First name: Test, Last name: User}
+    values: [2-4]
+- id: forms-opencart-register
+  url: https://demo.opencart.com/index.php?route=account/register&language=en-gb
+  goal: "Fill the account registration form with first name Test, last name User, and email test@example.com. Stop when those values are visible in the form. Do not submit the form."
+  tags: [forms, opencart]
+  verify: page
+  verify_args:
+    url: demo\.opencart\.com/.*route=account/register
+    fields: {First Name: Test, Last Name: User, E-Mail: test@example.com}
+- id: forms-httpbin-echo-contact
+  url: https://httpbin.org/forms/post
+  goal: "Fill in the pizza order form with customer name Test User and email test@example.com, then submit the order. Stop when the submitted values are shown."
+  tags: [forms, httpbin, echo]
+  verify: echo
+  verify_args:
+    url: httpbin\.org/post$
+    values: ['"custname": "Test User"', '"custemail": "test@example.com"']
+- id: forms-httpbin-echo-toppings
+  url: https://httpbin.org/forms/post
+  goal: "Fill in the pizza order form with customer name Test User, a medium pizza, and bacon topping, then submit the order. Stop when the submitted values are shown."
+  tags: [forms, httpbin, echo]
+  verify: echo
+  verify_args:
+    url: httpbin\.org/post$
+    values: ['"custname": "Test User"', '"size": "medium"', '"topping": "bacon"']

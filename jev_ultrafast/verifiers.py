@@ -66,8 +66,9 @@ def flights(page, *, origin, destination, day, one_way=True, return_day=None, ad
     return {"passed": all(checks.values()), "checks": checks, "visible_flights": flight_labels}
 
 
-def page(page, *, url=(), text=(), fields=None):
-    """Generic checks: URL patterns (decoded, case-insensitive), visible text, and form field values."""
+def page(page, *, url=(), text=(), fields=None, values=(), checked=None):
+    """Generic checks: URL patterns (decoded, case-insensitive), visible text, form field values,
+    values held by any field (for unlabeled controls), and how many same-labeled boxes are checked."""
     decoded, visible = unquote_plus(page["url"]), normalize(page["text"])
     patterns = [url] if isinstance(url, str) else url
     needles = [text] if isinstance(text, str) else text
@@ -75,7 +76,21 @@ def page(page, *, url=(), text=(), fields=None):
     checks.update({f"text:{needle}": normalize(needle) in visible for needle in needles})
     for label, expected in (fields or {}).items():
         checks[f"field:{label}"] = field_matches(page["actions"], label, expected)
+    held = {normalize(a.get("current_value", a.get("value", ""))) for a in page["actions"]}
+    checks.update({f"value:{value}": normalize(str(value)) in held for value in values})
+    for label, count in (checked or {}).items():
+        same = [a for a in page["actions"] if normalize(a.get("label", "")) == normalize(label)]
+        boxes = {a.get("node", a.get("index")): a.get("checked") for a in same}
+        checks[f"checked:{label}"] = sum(state == "true" for state in boxes.values()) == count
     return {"passed": all(checks.values()), "checks": checks}
+
+
+page_check = page
+
+
+def echo(page, *, url, values):
+    """A form that echoes its submission: the result page is at `url` and shows every submitted value."""
+    return page_check(page, url=url, text=values)
 
 
 def field_matches(actions, label, expected):

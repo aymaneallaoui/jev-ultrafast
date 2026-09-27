@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from jev_ultrafast.tracing import Trace
-from jev_ultrafast.verifiers import date_forms, flights, hn_story, page
-from scripts import collect
+from jev_ultrafast.verifiers import date_forms, echo, flights, hn_story, page
+from scripts import collect, summary_by_tag
 
 ROOT = Path(__file__).resolve().parents[1]
 TODAY = date(2026, 9, 28)
@@ -33,10 +33,10 @@ def test_unknown_placeholders_fail_at_load(text):
 
 def test_tasks_file_has_the_planned_distribution():
     tasks = collect.load_tasks(ROOT / "tasks.yaml", TODAY)
-    assert len(tasks) == 60 and len({t["id"] for t in tasks}) == 60
+    assert len(tasks) == 75 and len({t["id"] for t in tasks}) == 75
     assert Counter(t["tags"][0] for t in tasks) == {
         "google_flights": 12, "wikipedia": 10, "hackernews": 6, "github": 8, "mdn": 5,
-        "openstreetmap": 4, "forms": 6, "youtube": 4, "ebay": 5,
+        "openstreetmap": 4, "forms": 21, "youtube": 4, "ebay": 5,
     }
     for task in tasks:
         assert "{" not in task["goal"] and "Stop when" in task["goal"]
@@ -194,7 +194,7 @@ def test_trace_stats_and_summary_rows(tmp_path, monkeypatch):
     assert rows[0] == {
         "run_id": trace.run_id, "task_id": "t1", "tags": "wikipedia;section", "status": "DONE", "steps": "3",
         "elapsed_ms": "5", "verified": "", "jev_latency_p50_ms": "20", "jev_latency_max_ms": "30",
-        "input_tokens_total": "30",
+        "input_tokens_total": "30", "model_tag": "",
     }
     assert rows[1]["status"] == "error" and rows[1]["run_id"] == ""
 
@@ -277,3 +277,71 @@ def test_collector_passes_the_initial_page_to_verifiers_that_need_it(monkeypatch
             "verify_args": {"rank": 1, "comments": True}}
     collect.run_task(task)
     assert seen == [True]
+
+
+def test_page_verifier_checks_unlabeled_values_and_checked_counts():
+    boxes = observed("https://the-internet.herokuapp.com/checkboxes", actions=[
+        {"node": 1, "label": "checkbox", "checked": "true"},
+        {"node": 2, "label": "checkbox", "checked": "false"},
+        {"node": 3, "label": "Please select → Option 2", "kind": "select", "current_value": "Option 2"},
+    ])
+    assert page(boxes, values=["Option 2"], checked={"checkbox": 1})["passed"]
+    assert not page(boxes, checked={"checkbox": 2})["passed"]
+    assert not page(boxes, values=["Option 1"])["passed"]
+
+
+def test_echo_verifier_requires_the_result_page_and_every_value():
+    result = observed("https://httpbin.org/post", '"form": { "custname": "Test User", "size": "medium" }')
+    assert echo(result, url=r"httpbin\.org/post$", values=['"custname": "Test User"', '"size": "medium"'])["passed"]
+    assert not echo(result, url=r"httpbin\.org/post$", values=['"topping": "bacon"'])["passed"]
+    assert not echo(observed("https://httpbin.org/forms/post", result["text"]), url=r"httpbin\.org/post$",
+                    values=['"custname": "Test User"'])["passed"]
+
+
+def test_summary_by_tag_splits_verification_and_counts_usable_steps(tmp_path):
+    rows = [
+        ("a", "forms;demoqa", "DONE", "3", "true"),
+        ("b", "forms", "DONE", "5", ""),
+        ("c", "forms", "DONE", "7", "false"),
+        ("d", "forms;demoqa", "BLOCKED", "2", "true"),
+        ("", "forms", "error", "", ""),
+    ]
+    with open(tmp_path / "summary.csv", "w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["run_id", "task_id", "tags", "status", "steps", "verified"])
+        writer.writerows([(run, "t", tags, status, steps, verified) for run, tags, status, steps, verified in rows])
+    lines = {line["tag"]: line for line in summary_by_tag.table(summary_by_tag.load(tmp_path))}
+    forms = lines["forms"]
+    assert (forms["runs"], forms["DONE"], forms["BLOCKED"]) == (4, 3, 1)
+    assert (forms["verified_true"], forms["verified_false"], forms["verified_null"]) == (2, 1, 1)
+    assert forms["usable_steps"] == 8 and lines["all"]["usable_steps"] == 8
+    assert lines["demoqa"]["usable_steps"] == 3
+
+
+def test_summary_gains_the_model_tag_column_without_losing_old_rows(tmp_path):
+    path = tmp_path / "summary.csv"
+    old_fields = [f for f in collect.SUMMARY_FIELDS if f != "model_tag"]
+    with open(path, "w", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=old_fields)
+        writer.writeheader()
+        writer.writerow({f: "x" for f in old_fields} | {"run_id": "old"})
+    collect.append_summary(path, {f: "" for f in collect.SUMMARY_FIELDS} | {"run_id": "new", "model_tag": "jev-08b"})
+    rows = list(csv.DictReader(open(path)))
+    assert list(rows[0]) == collect.SUMMARY_FIELDS
+    assert [(r["run_id"], r["model_tag"]) for r in rows] == [("old", ""), ("new", "jev-08b")]
+    assert rows[0]["status"] == "x"
+
+
+def test_ids_select_tasks_from_a_list_or_file(tmp_path, capsys):
+    ids = tmp_path / "ids.txt"
+    ids.write_text("# comment\nwikipedia-open-turing\n\nmdn-fetch\n")
+    collect.main(["--ids", f"@{ids}", "--dry-run"])
+    printed = [line.split("#")[0] for line in capsys.readouterr().out.splitlines()]
+    assert printed == ["wikipedia-open-turing", "mdn-fetch"]
+    with pytest.raises(SystemExit):
+        collect.main(["--ids", "no-such-task", "--dry-run"])
+
+
+def test_smoke_ids_are_real_tasks():
+    tasks = {t["id"] for t in collect.load_tasks(collect.ROOT / "tasks.yaml", TODAY)}
+    assert collect.task_ids(f"@{collect.ROOT / 'scripts' / 'smoke_ids.txt'}") <= tasks

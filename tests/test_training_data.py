@@ -113,3 +113,29 @@ def test_audit_flags_low_confidence_and_stalls_in_successful_runs_only(tmp_path)
     assert flagged[("ok", 2)] == "wait_in_successful_run"
     assert flagged[("shaky", 1)] == "low_confidence"
     assert ("failed", 1) not in flagged and ("blocked", 1) not in flagged
+
+
+def test_compare_models_reports_rates_steps_and_latency_per_site(tmp_path):
+    from scripts import compare_models
+
+    def collection(name, rows):
+        folder = tmp_path / name
+        folder.mkdir()
+        with open(folder / "summary.csv", "w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["run_id", "task_id", "tags", "status", "steps", "verified", "jev_latency_p50_ms"])
+            writer.writerows(rows)
+        return str(folder)
+
+    jev = collection("jev", [("a1", "w", "wikipedia;x", "DONE", "3", "true", "300"),
+                             ("a2", "m", "mdn;y", "BLOCKED", "6", "false", "310"),
+                             ("a0", "old", "mdn;y", "DONE", "9", "true", "999")])
+    kev = collection("kev", [("b1", "w", "wikipedia;x", "DONE", "4", "false", "90"),
+                             ("b2", "m", "mdn;y", "DONE", "5", "true", "80")])
+    lines = compare_models.compare([("jev", jev, "a1"), ("kev", kev, None)], ids={"w", "m"})
+    table = {(line["tag"], line["model"]): line for line in lines}
+    assert table[("wikipedia", "jev")]["verified_rate"] == 1.0 and table[("wikipedia", "kev")]["verified_rate"] == 0.0
+    assert table[("mdn", "jev")]["done_rate"] == 0.0 and table[("mdn", "kev")]["done_rate"] == 1.0
+    assert table[("all", "jev")]["runs"] == 2 and table[("all", "jev")]["median_decision_ms"] == 305.0
+    assert table[("all", "kev")]["median_steps"] == 4.5
+    assert [line["tag"] for line in lines][-1] == "all"

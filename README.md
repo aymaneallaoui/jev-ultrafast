@@ -138,11 +138,19 @@ TRACE_DIR=traces uv run --env-file .env python scripts/collect.py --only wikiped
 uv run python scripts/collect.py --dry-run   # print resolved goals, no browser
 ```
 
-Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-%m-%d}` (any `strftime` format), and `{weekday+N}`. Unknown placeholders fail when the file loads. Each run has a 120-second budget, checked between steps; `--max-runtime 90m` (seconds, or `s`/`m`/`h`) also caps the batch, stopping the current run at its next step and skipping the rest. Every task names a verifier in `jev_ultrafast/verifiers.py`. `flights` matches city names ignoring accents and case (`Zurich` matches `Zürich, Switzerland`) and checks the return date on round trips. `page` checks decoded URL patterns, visible text, and form field values. `hn_story` resolves the ranked story from the first observed front page and checks its link or comment thread. Every run appends a row to `TRACE_DIR/summary.csv` with status, steps, verification, decision latency, and input tokens.
+Goals may use `{date+N}` (today + N days, e.g. `October 12, 2026`), `{date+N:%Y-%m-%d}` (any `strftime` format), and `{weekday+N}`. Unknown placeholders fail when the file loads. Each run has a 120-second budget, checked between steps; `--max-runtime 90m` (seconds, or `s`/`m`/`h`) also caps the batch, stopping the current run at its next step and skipping the rest. Every task names a verifier in `jev_ultrafast/verifiers.py`. `flights` matches city names ignoring accents and case (`Zurich` matches `Zürich, Switzerland`) and checks the return date on round trips. `page` checks decoded URL patterns, visible text, form field values, values held by unlabeled controls, and how many same-labeled boxes are checked. `echo` checks that a form's result page shows every submitted value. `hn_story` resolves the ranked story from the first observed front page and checks its link or comment thread. Every run appends a row to `TRACE_DIR/summary.csv` with status, steps, verification, decision latency, and input tokens.
 
 `uv run python scripts/audit_traces.py traces` lists decisions worth a human look in `traces/audit.csv`: a `DONE` run's operations below 0.5 confidence, and `WAIT`/`BLOCKED` choices in runs that still succeeded. Nothing is relabeled.
 
 `uv run python scripts/traces_to_kev.py traces --drop-nonprogress --exclude traces/audit.csv` keeps tagged `DONE` runs that did not fail verification and writes kev labelled requests to `traces/kev/train.jsonl` and `heldout.jsonl`, split 85/15 by run. Each record keeps the operation question and the executed operation's target head only; the other heads were speculative. `--holdout-tags mdn,openstreetmap` sends those sites' runs to `heldout_sites.jsonl` only, `--cap-tag google_flights=0.35` keeps that tag at most 35% of training records, and runs missing from `summary.csv` are skipped unless `--include-untagged`.
+
+`uv run python scripts/summary_by_tag.py traces --since 20260928T1840 --out by-tag.csv` groups `summary.csv` by tag with `verified_true`/`verified_false`/`verified_null` counts and `usable_steps`: decision steps in runs that ended `DONE` without failing verification.
+
+## Comparing decision models
+
+`scripts/serve_local.sh [08b|08b-6144|4b|RUN] [PORT]` serves a fine-tuned Kev checkpoint from `~/kev/runs` with `kev.serve`, which answers the same `/v1/systemone` requests as TypeSafe. `scripts/kev_smoke.sh MODEL [PORT]` then runs the tasks in `scripts/smoke_ids.txt` with `TYPESAFE_BASE_URL` pointed at it, writing traces to `~/jev-traces/kev-smoke-jev-MODEL` so they never mix with TypeSafe labels. `collect.py --model-tag` records the decision model in `summary.csv` (default: `TYPESAFE_MODEL`), and `--ids` limits a run to listed task ids.
+
+`uv run python scripts/compare_models.py --ids @scripts/smoke_ids.txt --model jev=TRACES --model jev-08b=KEV_TRACES` prints DONE rate, verified rate, median steps, and median decision latency per site for each collection.
 
 ## Development
 

@@ -15,15 +15,15 @@ from pathlib import Path
 import yaml
 
 from jev_ultrafast import Agent
-from jev_ultrafast.verifiers import DAYS, MONTHS, flights, hn_story, page
+from jev_ultrafast.verifiers import DAYS, MONTHS, echo, flights, hn_story, page
 
 ROOT = Path(__file__).resolve().parents[1]
 TIMEOUT_S = 120
 PAUSE_S = 2
-VERIFIERS = {"flights": flights, "page": page, "hn_story": hn_story}
+VERIFIERS = {"flights": flights, "page": page, "hn_story": hn_story, "echo": echo}
 SUMMARY_FIELDS = [
     "run_id", "task_id", "tags", "status", "steps", "elapsed_ms", "verified",
-    "jev_latency_p50_ms", "jev_latency_max_ms", "input_tokens_total",
+    "jev_latency_p50_ms", "jev_latency_max_ms", "input_tokens_total", "model_tag",
 ]
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 TOKEN = re.compile(r"(date|weekday)\+(\d+)(?::(.+))?")
@@ -108,7 +108,7 @@ def run_task(task, batch_deadline=None):
     return agent.trace if agent else None
 
 
-def summary_row(task, trace):
+def summary_row(task, trace, model_tag=""):
     meta = (trace.meta if trace else None) or {}
     stats = trace.stats() if trace else {}
     return {
@@ -122,6 +122,7 @@ def summary_row(task, trace):
         "jev_latency_p50_ms": stats.get("jev_latency_p50_ms"),
         "jev_latency_max_ms": stats.get("jev_latency_max_ms"),
         "input_tokens_total": stats.get("input_tokens_total"),
+        "model_tag": model_tag,
     }
 
 
@@ -131,8 +132,23 @@ def cell(value):
     return "" if value is None else value
 
 
+def migrate_summary(path):
+    """Add columns introduced after a summary.csv was started, left empty on its existing rows."""
+    with open(path, newline="", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        if reader.fieldnames == SUMMARY_FIELDS:
+            return
+        rows = list(reader)
+    with open(path, "w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=SUMMARY_FIELDS)
+        writer.writeheader()
+        writer.writerows({key: row.get(key, "") for key in SUMMARY_FIELDS} for row in rows)
+
+
 def append_summary(path, row):
     new = not path.exists()
+    if not new:
+        migrate_summary(path)
     with open(path, "a", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=SUMMARY_FIELDS)
         if new:
@@ -158,10 +174,20 @@ def report(rows, skipped=0):
         print(f"{name:<14}{value}")
 
 
+def task_ids(value):
+    if value.startswith("@"):
+        lines = Path(value[1:]).read_text(encoding="utf-8").splitlines()
+        return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
+    return {part.strip() for part in value.split(",") if part.strip()}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--tasks", default=ROOT / "tasks.yaml", type=Path)
     parser.add_argument("--only", help="Run only tasks carrying this tag.")
+    parser.add_argument("--ids", help="Run only these task ids: comma-separated, or @file with one id per line.")
+    parser.add_argument("--model-tag", default=os.environ.get("TYPESAFE_MODEL", "jev-latest"),
+                        help="Decision model recorded in summary.csv (default: TYPESAFE_MODEL or jev-latest).")
     parser.add_argument("--repeat", type=int, help="Runs per task; overrides each task's repeat.")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved goals without opening a browser.")
     parser.add_argument("--max-runtime", type=duration, help="Batch budget in seconds, or with s, m, or h (e.g. 90m).")
@@ -169,6 +195,12 @@ def main(argv=None):
     tasks = load_tasks(args.tasks, date.today())
     if args.only:
         tasks = [task for task in tasks if args.only in task["tags"]]
+    if args.ids:
+        wanted = task_ids(args.ids)
+        missing = wanted - {task["id"] for task in tasks}
+        if missing:
+            parser.error(f"unknown task ids: {sorted(missing)}")
+        tasks = [task for task in tasks if task["id"] in wanted]
     runs = [
         (task, n)
         for task in tasks
@@ -194,7 +226,7 @@ def main(argv=None):
             break
         if pause:
             time.sleep(pause)
-        row = summary_row(task, run_task(task, batch_deadline))
+        row = summary_row(task, run_task(task, batch_deadline), args.model_tag)
         append_summary(summary, row)
         rows.append(row)
         print(
