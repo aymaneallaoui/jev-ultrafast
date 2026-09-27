@@ -12,4 +12,9 @@ esac
 PORT=${2:-8009}
 cd "$KEV_DIR"
 [ -e "$RUN" ] || { echo "no checkpoint at $KEV_DIR/$RUN" >&2; exit 1; }
+if [ "${1:-08b}" = 4b ]; then
+  # A 16 GB GPU: CUDA graph buffers alone take ~5.5 GB on Kev-4B. See docs/kev-serve-memory.md.
+  export KEV_CUDA_GRAPHS=${KEV_CUDA_GRAPHS:-0} KEV_MAX_BATCH=${KEV_MAX_BATCH:-1}
+  export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+fi
 exec uv run --extra serve python -m kev.serve --run "$RUN" --port "$PORT"
